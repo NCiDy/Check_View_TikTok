@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>TikTok Account Manager</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="setup-banner" class="setup-banner hidden"></div>
+
+  <main id="login-view" class="login-view">
+    <section class="login-card">
+      <div class="brand-mark">TT</div>
+      <p class="eyebrow">NỘI BỘ CÔNG TY</p>
+      <h1>TikTok Account Manager</h1>
+      <p class="muted">Đăng nhập để quản lý và kiểm tra danh sách kênh.</p>
+      <form id="login-form" class="stack-form" method="post" autocomplete="on">
+        <label>
+          <span>Tên đăng nhập</span>
+          <input id="login-username" name="username" autocomplete="username" required minlength="3">
+        </label>
+        <label>
+          <span>Mật khẩu</span>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="btn primary full" type="submit">Đăng nhập</button>
+      </form>
+      <p id="login-error" class="form-error"></p>
+    </section>
+  </main>
+
+  <div id="app-view" class="app-view hidden">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand-mark small">TT</div>
+        <div>
+          <strong>TikTok Manager</strong>
+          <span>Company Dashboard</span>
+        </div>
+      </div>
+      <nav class="top-actions">
+        <button id="global-search-btn" class="btn subtle boss-only hidden">Tìm toàn công ty</button>
+        <button id="manage-users-btn" class="btn subtle boss-only hidden">Quản lý nhân sự</button>
+        <button id="settings-btn" class="btn subtle boss-only hidden">Cấu hình</button>
+        <button id="change-password-btn" class="btn subtle">Đổi mật khẩu</button>
+        <div class="current-user">
+          <strong id="current-user-name">—</strong>
+          <span id="current-user-role">—</span>
+        </div>
+        <button id="logout-btn" class="btn danger ghost">Đăng xuất</button>
+      </nav>
+    </header>
+
+    <div class="page-shell">
+      <section class="dashboard-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">TỔNG QUAN</p>
+            <h2 id="dashboard-title">Dashboard</h2>
+          </div>
+          <div class="dashboard-actions">
+            <button id="voice-enable-btn" class="btn subtle">🔊 Bật đọc thông báo</button>
+            <button id="check-company-btn" class="btn primary boss-only hidden">Check toàn công ty</button>
+          </div>
+        </div>
+        <div class="metric-grid">
+          <button class="metric-card" data-dashboard-filter="ALL">
+            <span>Tổng kênh</span><strong id="metric-total">0</strong><small>Đang quản lý</small>
+          </button>
+          <button class="metric-card live" data-dashboard-filter="LIVE">
+            <span>LIVE</span><strong id="metric-live">0</strong><small>Gồm cả riêng tư</small>
+          </button>
+          <button class="metric-card die" data-dashboard-filter="DIE">
+            <span>DIE / KHÓA</span><strong id="metric-die">0</strong><small>Đã xác nhận</small>
+          </button>
+          <button class="metric-card error" data-dashboard-filter="ERROR">
+            <span>ERROR / CHƯA CHECK</span><strong id="metric-error">0</strong><small>Có thể thử lại</small>
+          </button>
+          <button class="metric-card warning" data-dashboard-filter="PROBLEM">
+            <span>LỖI MỚI</span><strong id="metric-problem">0</strong><small>Từ LIVE sang lỗi</small>
+          </button>
+        </div>
+        <div class="last-check-line">Lần check gần nhất: <strong id="last-check-at">Chưa có</strong></div>
+      </section>
+
+      <section id="job-panel" class="job-panel hidden">
+        <div class="job-head">
+          <div><strong id="job-label">Đang kiểm tra</strong><span id="job-count">0/0</span></div>
+          <button id="stop-job-btn" class="btn danger ghost">Dừng job</button>
+        </div>
+        <div class="progress-track"><div id="job-progress" class="progress-bar"></div></div>
+        <div id="job-stats" class="job-stats"></div>
+      </section>
+
+      <section class="workspace-grid">
+        <aside class="people-panel panel">
+          <div class="panel-title-row">
+            <div><p class="eyebrow">PHẠM VI</p><h3>Nhân sự</h3></div>
+            <button id="quick-add-user-btn" class="icon-btn boss-only hidden" title="Thêm nhân sự">＋</button>
+          </div>
+          <div id="people-list" class="people-list"></div>
+        </aside>
+
+        <section class="accounts-panel panel">
+          <div class="owner-header">
+            <div>
+              <p id="owner-path" class="eyebrow">DANH SÁCH KÊNH</p>
+              <h3 id="selected-owner-name">Chọn một người</h3>
+              <p id="selected-owner-meta" class="muted"></p>
+            </div>
+            <div class="owner-actions">
+              <button id="add-machine-btn" class="btn subtle hidden">+ Thêm máy</button>
+              <button id="add-account-btn" class="btn subtle hidden">+ Thêm kênh</button>
+              <button id="check-selected-btn" class="btn subtle" disabled>Check đã chọn</button>
+              <button id="check-owner-btn" class="btn primary" disabled>Check người này</button>
+            </div>
+          </div>
+
+          <div id="machine-tabs" class="machine-tabs"></div>
+
+          <div class="table-toolbar">
+            <div class="search-field">
+              <span>⌕</span>
+              <input id="account-search" placeholder="Tìm username trong danh sách...">
+            </div>
+            <div id="status-filters" class="filter-row">
+              <button class="filter-chip active" data-status="ALL">Tất cả</button>
+              <button class="filter-chip" data-status="LIVE">LIVE</button>
+              <button class="filter-chip" data-status="DIE">DIE</button>
+              <button class="filter-chip" data-status="ERROR">ERROR</button>
+              <button class="filter-chip" data-status="UNCHECKED">Chưa check</button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th><input id="select-all-accounts" type="checkbox" aria-label="Chọn tất cả"></th>
+                  <th>Máy / Kênh</th>
+                  <th>Tài khoản</th>
+                  <th>Trạng thái</th>
+                  <th>Followers</th>
+                  <th>Tổng view mẫu</th>
+                  <th>Lần check</th>
+                  <th>Thao tác</th>
+                </tr>
+              </thead>
+              <tbody id="accounts-body"></tbody>
+            </table>
+            <div id="accounts-empty" class="empty-state">Chưa có kênh TikTok.</div>
+          </div>
+        </section>
+      </section>
+
+      <section class="panel changes-panel">
+        <div class="panel-title-row">
+          <div><p class="eyebrow">SO SÁNH TỰ ĐỘNG</p><h3>Thay đổi followers gần nhất</h3></div>
+        </div>
+        <div id="changes-list" class="changes-list"></div>
+      </section>
+    </div>
+  </div>
+
+  <div id="modal-backdrop" class="modal-backdrop hidden" aria-hidden="true">
+    <section id="modal-card" class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head"><h3 id="modal-title">Thông tin</h3><button id="modal-close" class="icon-btn">×</button></div>
+      <div id="modal-content"></div>
+    </section>
+  </div>
+
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

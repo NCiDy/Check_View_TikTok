@@ -13,8 +13,19 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -338,6 +349,7 @@ def serialize_user(db: Session, user: User) -> dict[str, Any]:
         "id": str(user.id),
         "username": user.username,
         "full_name": user.full_name,
+        "avatar_url": user.avatar_url,
         "role": user.role,
         "leader_id": str(user.leader_id) if user.leader_id else None,
         "is_active": user.is_active,
@@ -600,6 +612,130 @@ def reset_password(
     db.commit()
     return {"success": True}
 
+@app.post("/api/users/{user_id}/avatar")
+async def upload_user_avatar(
+    user_id: str,
+    avatar: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current: User = Depends(csrf_protect),
+):
+    target = db.get(User, parse_uuid(user_id, "User ID"))
+
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy người dùng"
+        )
+
+    # Mỗi người chỉ được đổi ảnh của mình.
+    # BOSS được đổi ảnh cho tất cả mọi người.
+    if current.role != "BOSS" and current.id != target.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Bạn không được đổi ảnh của người khác"
+        )
+
+    allowed_types = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+    }
+
+    extension = allowed_types.get(avatar.content_type or "")
+
+    if extension is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Chỉ chấp nhận ảnh JPG, PNG hoặc WebP"
+        )
+
+    # Đọc tối đa 2 MB + 1 byte để kiểm tra vượt giới hạn.
+    image_data = await avatar.read(2 * 1024 * 1024 + 1)
+
+    if not image_data:
+        raise HTTPException(
+            status_code=422,
+            detail="File ảnh trống"
+        )
+
+    if len(image_data) > 2 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail="Ảnh đại diện không được vượt quá 2 MB"
+        )
+
+    if (
+        not settings.supabase_url
+        or not settings.supabase_service_role_key
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Server chưa cấu hình Supabase Storage"
+        )
+
+    object_name = f"{target.id}.{extension}"
+
+    upload_url = (
+        f"{settings.supabase_url}"
+        f"/storage/v1/object/avatars/{object_name}"
+    )
+
+    storage_request = UrlRequest(
+        upload_url,
+        data=image_data,
+        method="POST",
+        headers={
+            "Authorization": (
+                f"Bearer {settings.supabase_service_role_key}"
+            ),
+            "apikey": settings.supabase_service_role_key,
+            "Content-Type": avatar.content_type,
+            "x-upsert": "true",
+        },
+    )
+
+    try:
+        with urlopen(storage_request, timeout=30) as response:
+            response.read()
+    except HTTPError as exc:
+        error_content = exc.read().decode(
+            "utf-8",
+            errors="ignore"
+        )
+
+        logger.error(
+            "Supabase Storage HTTP %s: %s",
+            exc.code,
+            error_content,
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase không nhận được ảnh"
+        ) from exc
+    except URLError as exc:
+        logger.error("Supabase Storage error: %s", exc)
+
+        raise HTTPException(
+            status_code=502,
+            detail="Không kết nối được Supabase Storage"
+        ) from exc
+
+    # Thêm phiên bản vào URL để trình duyệt không giữ ảnh cũ.
+    avatar_url = (
+        f"{settings.supabase_url}"
+        f"/storage/v1/object/public/avatars/{object_name}"
+        f"?v={int(time.time())}"
+    )
+
+    target.avatar_url = avatar_url
+    db.commit()
+    db.refresh(target)
+
+    return {
+        "success": True,
+        "user": serialize_user(db, target),
+    }
 
 @app.get("/api/machines")
 def list_machines(

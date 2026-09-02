@@ -74,7 +74,13 @@ function toast(message, type = "info", timeout = 4200) {
 async function api(path, options = {}, quiet = false) {
   const method = (options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers || {});
-  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (
+    options.body &&
+    !(options.body instanceof FormData) &&
+    !headers.has("Content-Type")
+  ) {
+    headers.set("Content-Type", "application/json");
+  }
   if (!["GET", "HEAD"].includes(method) && state.csrf) headers.set("X-CSRF-Token", state.csrf);
   const response = await fetch(path, { ...options, method, headers, credentials: "same-origin" });
   let data = {};
@@ -185,18 +191,106 @@ function renderChanges(items) {
   }).join("");
 }
 
+function changeUserAvatar(userId) {
+  const user = state.users.find((item) => item.id === userId);
+
+  if (!user) {
+    toast("Không tìm thấy người dùng", "error");
+    return;
+  }
+
+  const canChange =
+    state.user.role === "BOSS" ||
+    state.user.id === user.id;
+
+  if (!canChange) {
+    toast("Bạn không được đổi ảnh của người khác", "error");
+    return;
+  }
+
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/jpeg,image/png,image/webp";
+
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      toast("Ảnh không được vượt quá 2 MB", "error");
+      return;
+    }
+
+    const allowedTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp"
+    ];
+
+    if (!allowedTypes.includes(file.type)) {
+      toast("Chỉ chấp nhận ảnh JPG, PNG hoặc WebP", "error");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("avatar", file);
+
+    try {
+      toast("Đang tải ảnh lên...", "info");
+
+      await api(`/api/users/${user.id}/avatar`, {
+        method: "POST",
+        body: formData
+      });
+
+      await refreshUsers();
+
+      if (state.user.id === user.id) {
+        const updatedUser = state.users.find(
+          (item) => item.id === user.id
+        );
+
+        if (updatedUser) {
+          state.user.avatar_url = updatedUser.avatar_url;
+        }
+      }
+
+      toast("Đã cập nhật ảnh đại diện", "success");
+    } catch (error) {
+      console.error("Upload avatar failed:", error);
+    }
+  });
+
+  input.click();
+}
 function renderPeople() {
   const container = $("#people-list");
   const activeClass = (id) => !state.companyMode && state.selectedOwnerId === id ? "active" : "";
-  const personButton = (user, indent = false) => `
+  const personButton = (user, indent = false) => {
+  const canChangeAvatar =
+    state.user.role === "BOSS" ||
+    state.user.id === user.id;
+
+  const avatarContent = user.avatar_url
+    ? `<img src="${escapeHtml(user.avatar_url)}" alt="${escapeHtml(user.full_name)}">`
+    : escapeHtml(initials(user.full_name));
+
+  return `
     <div class="${indent ? "member-indent" : ""}">
       <button class="person-btn ${activeClass(user.id)}" data-person-id="${user.id}">
-        <span class="person-avatar">${escapeHtml(initials(user.full_name))}</span>
+        <span
+          class="person-avatar ${canChangeAvatar ? "editable" : ""}"
+          ${canChangeAvatar ? `data-avatar-user="${user.id}" title="Bấm để đổi ảnh"` : ""}
+        >
+          ${avatarContent}
+        </span>
         <span class="person-copy"><strong>${escapeHtml(user.full_name)}</strong><span>${user.role} · @${escapeHtml(user.username)}${user.is_active ? "" : " · Đã khóa"}</span></span>
         <span class="person-count">${user.account_count}</span>
       </button>
       ${state.user.role === "BOSS" && user.role !== "BOSS" ? `<div class="person-tools"><button data-edit-user="${user.id}">Sửa</button>${user.role === "LEADER" ? `<button data-check-group="${user.id}">Check nhóm</button>` : ""}</div>` : ""}
     </div>`;
+  };
 
   if (state.user.role === "BOSS") {
     const bosses = state.users.filter((user) => user.role === "BOSS");
@@ -716,9 +810,16 @@ $("#select-all-accounts").addEventListener("change", (event) => {
 });
 
 document.addEventListener("click", async (event) => {
-  const target = event.target.closest("[data-person-id],[data-edit-user],[data-check-group],[data-machine-id],[data-delete-machine],[data-view-account],[data-delete-account],[data-transfer-account],[data-status],[data-dashboard-filter],[data-close-modal],[data-modal-edit-user],[data-search-owner],[data-owner-id]");
+  const target = event.target.closest("[data-avatar-user],[data-person-id],[data-edit-user],[data-check-group],[data-machine-id],[data-delete-machine],[data-view-account],[data-delete-account],[data-transfer-account],[data-status],[data-dashboard-filter],[data-close-modal],[data-modal-edit-user],[data-search-owner],[data-owner-id]");
   if (!target) return;
-  if (target.dataset.personId) await selectUser(target.dataset.personId);
+  if (target.dataset.avatarUser) {
+    event.preventDefault();
+    event.stopPropagation();
+    changeUserAvatar(target.dataset.avatarUser);
+  }
+  else if (target.dataset.personId) {
+    await selectUser(target.dataset.personId);
+  }
   else if (target.dataset.editUser) openUserForm(target.dataset.editUser);
   else if (target.dataset.checkGroup) { if (confirm("Check toàn bộ Leader và Member thuộc nhóm này?")) startCheck("LEADER_GROUP", target.dataset.checkGroup); }
   else if (target.dataset.machineId) { state.selectedMachineId = target.dataset.machineId; state.selectedAccounts.clear(); renderMachineTabs(); renderAccounts(); }

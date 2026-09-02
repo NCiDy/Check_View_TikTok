@@ -35,6 +35,7 @@ class User(Base):
     )
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
+    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     role: Mapped[str] = mapped_column(Text, nullable=False)
     leader_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True

@@ -1,6 +1,6 @@
-# TikTok Account Manager – Quản lý TikTok nội bộ
+# TikTok Account Manager – Quản lý kênh TikTok
 
-Website quản lý và kiểm tra tài khoản TikTok dành cho công ty nhỏ, được nâng cấp từ **TikTok Bulk Account Checker Pro**.
+Website quản lý và kiểm tra tài khoản TikTok dành cho công ty BEA Entertaiment, được nâng cấp từ **TikTok Bulk Account Checker Pro**.
 
 Hệ thống sử dụng:
 

@@ -1,11 +1,11 @@
 # TikTok Account Manager – Quản lý kênh TikTok
 
-Website quản lý và kiểm tra tài khoản TikTok dành cho công ty BEA Entertaiment, được nâng cấp từ **TikTok Bulk Account Checker Pro**.
+Website quản lý và kiểm tra tài khoản TikTok nội bộ, được nâng cấp từ **TikTok Bulk Account Checker Pro**.
 
 Hệ thống sử dụng:
 
 - Python FastAPI.
-- HTML, CSS và JavaScript thuần.
+- React, TypeScript và Vite cho frontend.
 - Supabase PostgreSQL để lưu dữ liệu.
 - Supabase Storage để lưu ảnh đại diện.
 - `curl_cffi` để kiểm tra thông tin TikTok.
@@ -36,6 +36,7 @@ Hệ thống có ba role:
   - Xem và check kênh của chính mình.
   - Xem Member trực thuộc.
   - Check thủ công từng Member.
+  - Thêm/xóa máy và kênh của chính mình hoặc Member trực thuộc khi được BOSS cấp quyền.
   - Không xem được dữ liệu nhóm khác.
 
 - **MEMBER**
@@ -44,6 +45,10 @@ Hệ thống có ba role:
   - Tự thay ảnh đại diện.
 
 Phân quyền được kiểm tra tại backend, không chỉ ẩn nút trên giao diện.
+
+Mỗi tài khoản chỉ có một phiên đăng nhập hoạt động. Khi đăng nhập ở thiết bị
+mới, phiên cũ bị thu hồi ngay. Hệ thống hỗ trợ tối đa ba BOSS đang hoạt động;
+chỉ BOSS chính (`is_system_owner`) được tạo, khóa hoặc reset BOSS khác.
 
 ### Quản lý máy và kênh
 
@@ -71,6 +76,7 @@ Checker hiện hỗ trợ:
 - Followers và following.
 - Tổng lượt thích.
 - Tổng view mẫu của các video gần đây.
+- Xem tối đa 10 video công khai gần nhất trong cửa sổ chi tiết.
 - Trạng thái LIVE, DIE/KHÓA và ERROR.
 - Nhận diện tài khoản riêng tư.
 - Proxy.
@@ -93,6 +99,8 @@ Nguyên tắc xác định trạng thái:
 - Mỗi người có job riêng, không phải chờ toàn bộ job khác hoàn thành.
 - Toàn hệ thống vẫn bị giới hạn tổng worker để tránh gửi quá nhiều request.
 - Nếu cùng một TikTok ID đang được check, hệ thống dùng chung request đang chạy.
+- Tiến độ job chỉ hiển thị trên đúng phiên đã bấm Check.
+- Sau khi hoàn thành, các giao diện có quyền xem tự tải lại dữ liệu mới.
 
 ### Dashboard
 
@@ -106,6 +114,7 @@ Dashboard hiển thị theo phạm vi quyền:
 - Lần check gần nhất.
 - Tiến độ job đang chạy.
 - Lọc danh sách khi bấm vào từng chỉ số.
+- Danh sách nhân sự được chia theo từng Leader và các Member trực thuộc.
 
 ### So sánh follower
 
@@ -166,6 +175,7 @@ Asia/Ho_Chi_Minh
 
 ```text
 app/
+├── audit.py           # Ghi nhật ký thao tác quan trọng
 ├── config.py          # Đọc biến môi trường
 ├── database.py        # Kết nối PostgreSQL
 ├── job_manager.py     # Quản lý job và worker
@@ -179,14 +189,20 @@ core/
 └── worker_pool.py     # Xử lý đa luồng cũ
 
 database/
-└── 001_initial_schema.sql
+├── 001_initial_schema.sql
+└── 002_enterprise_sessions.sql
+
+frontend/
+├── src/               # React + TypeScript
+├── package.json
+└── vite.config.ts
 
 scripts/
 ├── setup_local.py
 ├── create_boss.py
 └── check_database.py
 
-static/
+static/                # Giao diện cũ tại /legacy
 ├── index.html
 ├── style.css
 └── app.js
@@ -203,6 +219,7 @@ requirements.txt
 
 - Windows 10 hoặc Windows 11.
 - Python 3.11 trở lên.
+- Node.js LTS để build frontend React.
 - Project Supabase Cloud.
 - Kết nối Internet.
 
@@ -222,31 +239,26 @@ Trong Supabase:
 database/001_initial_schema.sql
 ```
 
-Database gồm năm bảng:
+4. Chạy tiếp file:
+
+```text
+database/002_enterprise_sessions.sql
+```
+
+Database chính gồm bảy bảng:
 
 - `users`
 - `machines`
 - `tiktok_accounts`
 - `check_runs`
 - `app_settings`
+- `user_sessions`
+- `audit_logs`
 
-### 2. Cập nhật mã máy và ảnh đại diện
+Migration `002` tự cập nhật mã máy, ảnh đại diện, nhiều BOSS, session và nhật ký.
+Tài khoản BOSS cũ nhất đang hoạt động tự trở thành BOSS chính.
 
-Nếu database được tạo từ schema cũ, chạy thêm:
-
-```sql
-ALTER TABLE public.machines
-DROP CONSTRAINT IF EXISTS machines_machine_number_check;
-
-ALTER TABLE public.machines
-ADD CONSTRAINT machines_machine_number_check
-CHECK (machine_number BETWEEN 1 AND 32767);
-
-ALTER TABLE public.users
-ADD COLUMN IF NOT EXISTS avatar_url text;
-```
-
-### 3. Tạo Storage bucket
+### 2. Tạo Storage bucket
 
 Trong Supabase:
 
@@ -312,11 +324,12 @@ start.bat
 Lần chạy đầu chương trình sẽ:
 
 1. Kiểm tra Python.
-2. Cài thư viện.
-3. Tạo `.env` nếu chưa có.
-4. Kiểm tra kết nối Supabase.
-5. Hướng dẫn tạo BOSS.
-6. Chạy FastAPI.
+2. Cài thư viện Python.
+3. Cài và build giao diện React bằng Node.js.
+4. Tạo `.env` nếu chưa có.
+5. Kiểm tra kết nối Supabase.
+6. Hướng dẫn tạo BOSS chính.
+7. Chạy FastAPI.
 
 Mở trình duyệt tại:
 
@@ -330,6 +343,8 @@ http://127.0.0.1:8088
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+npm --prefix frontend install
+npm --prefix frontend run build
 python scripts\setup_local.py
 python scripts\check_database.py
 python server.py
@@ -347,7 +362,8 @@ python scripts\create_boss.py
 
 Mật khẩu được hash bằng Argon2id trước khi lưu. Hệ thống không lưu mật khẩu gốc.
 
-BOSS có thể tạo thêm Leader và Member trong giao diện **Quản lý nhân sự**.
+BOSS chính có thể tạo thêm tối đa hai BOSS phụ trong giao diện **Quản lý nhân sự**.
+BOSS thường có thể tạo và quản lý Leader/Member nhưng không thay đổi BOSS khác.
 
 ---
 
@@ -392,6 +408,8 @@ Không nên tăng worker quá cao khi chưa có proxy ổn định.
 - Không thấy nhóm Leader khác.
 - Check được bản thân.
 - Check được từng Member.
+- Khi được cấp quyền, thêm/xóa máy và kênh cho bản thân hoặc Member trực thuộc.
+- Không thể thêm/xóa dữ liệu của Member thuộc Leader khác, kể cả gọi API trực tiếp.
 - Không truy cập chức năng dành riêng cho BOSS.
 
 ### Member
@@ -406,8 +424,12 @@ Không nên tăng worker quá cao khi chưa có proxy ổn định.
 - Nhấn `F5`, máy, kênh và kết quả check vẫn còn.
 - Restart server, dữ liệu vẫn còn.
 - BOSS check kênh của Member thì Member nhìn thấy kết quả mới.
+- Chỉ thiết bị bấm Check nhìn thấy thanh tiến độ của job đó.
+- Đăng nhập cùng tài khoản ở máy thứ hai phải đăng xuất máy thứ nhất.
+- Khi BOSS đổi quyền, giao diện người nhận quyền tự cập nhật mà không cần F5.
 - Cùng một TikTok ID không tạo dữ liệu riêng theo người check.
 - Timeout và lỗi mạng phải là ERROR, không phải DIE.
+- Biểu tượng mắt hiển thị thông tin và tối đa 10 video công khai gần nhất.
 
 ---
 
@@ -446,6 +468,12 @@ APP_ENV="production"
 COOKIE_SECURE="true"
 SUPABASE_URL="..."
 SUPABASE_SERVICE_ROLE_KEY="..."
+```
+
+Build command trên Render:
+
+```text
+bash render-build.sh
 ```
 
 Start command:

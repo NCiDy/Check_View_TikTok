@@ -67,6 +67,7 @@ def create_boss_interactive() -> bool:
             password_hash=password_hash,
             full_name=full_name,
             role="BOSS",
+            is_system_owner=True,
             can_add_accounts=True,
             can_delete_accounts=True,
             can_run_checks=True,
@@ -74,7 +75,7 @@ def create_boss_interactive() -> bool:
         )
         db.add(boss)
 
-    print("[OK] Đã tạo BOSS. Database chỉ lưu chuỗi Argon2id, không lưu mật khẩu gốc.")
+    print("[OK] Đã tạo BOSS chính. Database chỉ lưu chuỗi Argon2id, không lưu mật khẩu gốc.")
     return True
 
 
@@ -84,4 +85,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"[X] Không thể tạo BOSS: {exc}")
         raise SystemExit(1)
-

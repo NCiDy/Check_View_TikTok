@@ -83,7 +83,15 @@ def db_session() -> Generator[Session, None, None]:
 
 def test_database_connection() -> dict:
     engine = get_engine()
-    required = {"users", "machines", "tiktok_accounts", "check_runs", "app_settings"}
+    required = {
+        "users",
+        "machines",
+        "tiktok_accounts",
+        "check_runs",
+        "app_settings",
+        "user_sessions",
+        "audit_logs",
+    }
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
         rows = connection.execute(text(
@@ -91,6 +99,22 @@ def test_database_connection() -> dict:
             "WHERE table_schema = 'public'"
         ))
         found = {row[0] for row in rows}
+        column_rows = connection.execute(text(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public'"
+        ))
+        found_columns = {(row[0], row[1]) for row in column_rows}
     missing = sorted(required - found)
-    return {"connected": True, "tables_ok": not missing, "missing_tables": missing}
-
+    required_columns = {
+        ("users", "is_system_owner"),
+        ("users", "show_in_org_chart"),
+        ("check_runs", "requested_session_id"),
+    }
+    missing_columns = sorted(f"{table}.{column}" for table, column in required_columns - found_columns)
+    return {
+        "connected": True,
+        "tables_ok": not missing,
+        "schema_ok": not missing and not missing_columns,
+        "missing_tables": missing,
+        "missing_columns": missing_columns,
+    }

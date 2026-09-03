@@ -121,6 +121,7 @@ class JobManager:
         requested_by: uuid.UUID | None,
         trigger_type: str,
         scope_type: str,
+        requested_session_id: uuid.UUID | None = None,
         target_user_id: uuid.UUID | None = None,
         selected_ids: list[uuid.UUID] | None = None,
         priority: int = 10,
@@ -135,6 +136,7 @@ class JobManager:
 
             run = CheckRun(
                 requested_by=requested_by,
+                requested_session_id=requested_session_id,
                 trigger_type=trigger_type,
                 scope_type=scope_type,
                 target_user_id=target_user_id,
@@ -154,12 +156,25 @@ class JobManager:
         self._stop_events[run_id] = stop_event
         thread = threading.Thread(
             target=self._run_job,
-            args=(run_id, account_ids, trigger_type == "SCHEDULED", requested_by, stop_event),
+            args=(
+                run_id,
+                account_ids,
+                trigger_type == "SCHEDULED",
+                requested_by,
+                requested_session_id,
+                stop_event,
+            ),
             name=f"job-{run_id}",
             daemon=True,
         )
         thread.start()
-        return {"id": str(run_id), "status": "QUEUED", "total_accounts": len(account_ids)}
+        with db_session() as db:
+            created = db.get(CheckRun, run_id)
+            return self.serialize_run(created) if created else {
+                "id": str(run_id),
+                "status": "QUEUED",
+                "total_accounts": len(account_ids),
+            }
 
     def stop_job(self, run_id: uuid.UUID) -> bool:
         event = self._stop_events.get(run_id)
@@ -465,6 +480,7 @@ class JobManager:
         account_ids: list[uuid.UUID],
         scheduled: bool,
         requested_by: uuid.UUID | None,
+        requested_session_id: uuid.UUID | None,
         stop_event: threading.Event,
     ) -> None:
         try:
@@ -477,7 +493,11 @@ class JobManager:
                 run.started_at = datetime.now(timezone.utc)
                 db.flush()
                 run_payload = self.serialize_run(run)
-            self._emit("job_started", {"requested_by": str(requested_by) if requested_by else None, "run": run_payload})
+            event_identity = {
+                "requested_by": str(requested_by) if requested_by else None,
+                "requested_session_id": str(requested_session_id) if requested_session_id else None,
+            }
+            self._emit("job_started", {**event_identity, "run": run_payload, "scheduled": scheduled})
 
             queue = deque(account_ids)
             pending: dict[concurrent.futures.Future, tuple[uuid.UUID, InflightCheck]] = {}
@@ -507,14 +527,14 @@ class JobManager:
                     )
                     run_payload = self._update_run(run_id, outcome)
                     self._emit("job_progress", {
-                        "requested_by": str(requested_by) if requested_by else None,
+                        **event_identity,
                         "run": run_payload,
                         "account": outcome,
                         "scheduled": scheduled,
                     })
                     for alert in outcome.get("alerts", []):
                         self._emit("alert", {
-                            "requested_by": str(requested_by) if requested_by else None,
+                            **event_identity,
                             "owner_id": outcome.get("owner_id"),
                             "account_id": outcome.get("account_id"),
                             "voice_enabled": runtime["voice_notifications"],
@@ -535,7 +555,7 @@ class JobManager:
                 else:
                     payload = {"id": str(run_id), "status": "FAILED"}
             self._emit("job_finished", {
-                "requested_by": str(requested_by) if requested_by else None,
+                **event_identity,
                 "run": payload,
                 "scheduled": scheduled,
             })
@@ -553,6 +573,7 @@ class JobManager:
                     payload = {"id": str(run_id), "status": "FAILED", "message": str(exc)}
             self._emit("job_failed", {
                 "requested_by": str(requested_by) if requested_by else None,
+                "requested_session_id": str(requested_session_id) if requested_session_id else None,
                 "run": payload,
             })
         finally:
@@ -577,6 +598,7 @@ class JobManager:
         return {
             "id": str(run.id),
             "requested_by": str(run.requested_by) if run.requested_by else None,
+            "requested_session_id": str(run.requested_session_id) if run.requested_session_id else None,
             "trigger_type": run.trigger_type,
             "scope_type": run.scope_type,
             "target_user_id": str(run.target_user_id) if run.target_user_id else None,

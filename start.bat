@@ -69,7 +69,7 @@ if errorlevel 1 (
     )
 )
 
-echo [1/3] Dang cai/cap nhat thu vien...
+echo [1/4] Dang cai/cap nhat thu vien Python...
 "%PY_CMD%" -m pip install -r requirements.txt --quiet --no-warn-script-location
 if errorlevel 1 (
     echo [X] Cai thu vien that bai. Kiem tra log phia tren va ket noi Internet.
@@ -77,9 +77,38 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo [2/4] Dang build giao dien React...
+where npm >nul 2>&1
+if errorlevel 1 (
+    if not exist "static\react\index.html" (
+        echo [X] Chua co Node.js de build React.
+        echo [i] Cai Node.js LTS tai https://nodejs.org roi chay lai.
+        pause
+        exit /b 1
+    )
+    echo [!] Khong tim thay npm, dang dung ban React da build san.
+) else (
+    pushd frontend
+    if not exist "node_modules" call npm install --silent
+    if errorlevel 1 (
+        popd
+        echo [X] Cai thu vien React that bai.
+        pause
+        exit /b 1
+    )
+    call npm run build --silent
+    if errorlevel 1 (
+        popd
+        echo [X] Build React that bai.
+        pause
+        exit /b 1
+    )
+    popd
+)
+
 if not exist ".env" (
     echo.
-    echo [2/3] Chua co .env. Bat dau setup Supabase va tai khoan BOSS...
+    echo [3/4] Chua co .env. Bat dau setup Supabase va tai khoan BOSS...
     "%PY_CMD%" scripts\setup_local.py
     if errorlevel 1 (
         echo [X] Setup chua hoan tat.
@@ -87,10 +116,10 @@ if not exist ".env" (
         exit /b 1
     )
 ) else (
-    echo [2/3] Da co file .env.
+    echo [3/4] Da co file .env.
 )
 
-echo [3/3] Dang khoi dong server...
+echo [4/4] Dang khoi dong server...
 start "" http://127.0.0.1:8088
 echo.
 echo [OK] Mo website tai http://127.0.0.1:8088

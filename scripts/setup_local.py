@@ -62,7 +62,12 @@ if __name__ == "__main__":
         result = test_database_connection()
         if not result["tables_ok"]:
             raise RuntimeError("Thiếu bảng: " + ", ".join(result["missing_tables"]))
-        print("[OK] Kết nối Supabase thành công, đủ 5 bảng.")
+        if not result.get("schema_ok", False):
+            raise RuntimeError(
+                "Chưa chạy database/002_enterprise_sessions.sql; thiếu: "
+                + ", ".join(result.get("missing_columns", []))
+            )
+        print("[OK] Kết nối Supabase thành công, đủ 7 bảng.")
 
         from scripts.create_boss import create_boss_interactive
 
@@ -72,4 +77,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"[X] Setup thất bại: {exc}")
         raise SystemExit(1)
-

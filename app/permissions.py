@@ -27,17 +27,50 @@ def ensure_can_view_user(db: Session, actor: User, target_id: uuid.UUID) -> None
         raise HTTPException(status_code=403, detail="Không được xem dữ liệu của người này")
 
 
-def can_manage_own_accounts(actor: User, owner_id: uuid.UUID, permission: str) -> bool:
+def can_manage_accounts(
+    db: Session,
+    actor: User,
+    owner_id: uuid.UUID,
+    permission: str,
+) -> bool:
+    # BOSS quản lý toàn công ty.
     if actor.role == "BOSS":
         return True
-    if actor.id != owner_id:
+
+    # Tài khoản phải được BOSS cấp đúng quyền.
+    if not bool(getattr(actor, permission, False)):
         return False
-    return bool(getattr(actor, permission, False))
+
+    # Leader hoặc Member quản lý kênh của chính mình.
+    if actor.id == owner_id:
+        return True
+
+    # Leader được quản lý Member trực thuộc.
+    if actor.role == "LEADER":
+        member_id = db.scalar(
+            select(User.id).where(
+                User.id == owner_id,
+                User.role == "MEMBER",
+                User.leader_id == actor.id,
+                User.is_active.is_(True),
+            )
+        )
+        return member_id is not None
+
+    return False
 
 
-def ensure_can_manage_own_accounts(actor: User, owner_id: uuid.UUID, permission: str) -> None:
-    if not can_manage_own_accounts(actor, owner_id, permission):
-        raise HTTPException(status_code=403, detail="BOSS chưa bật quyền này cho tài khoản của bạn")
+def ensure_can_manage_accounts(
+    db: Session,
+    actor: User,
+    owner_id: uuid.UUID,
+    permission: str,
+) -> None:
+    if not can_manage_accounts(db, actor, owner_id, permission):
+        raise HTTPException(
+            status_code=403,
+            detail="Bạn không có quyền quản lý máy hoặc kênh của người này",
+        )
 
 
 def machine_owner(db: Session, machine_id: uuid.UUID) -> uuid.UUID:

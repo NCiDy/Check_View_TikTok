@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 import json
 import logging
 import os
@@ -29,18 +30,20 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from PIL import Image, UnidentifiedImageError
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
+from app.audit import write_audit
 from app.database import db_session, get_db, test_database_connection
 from app.job_manager import JobManager
-from app.models import AppSettings, CheckRun, Machine, TikTokAccount, User
+from app.models import AuditLog, AppSettings, CheckRun, Machine, TikTokAccount, User, UserSession
 from app.permissions import (
-    ensure_can_manage_own_accounts,
+    ensure_can_manage_accounts,
     ensure_can_start_manual_check,
     ensure_can_view_user,
     machine_owner,
@@ -48,10 +51,12 @@ from app.permissions import (
 from app.security import (
     csrf_protect,
     end_user_session,
+    get_current_session,
     get_current_user,
     hash_password,
     mark_login,
     require_roles,
+    revoke_user_sessions,
     start_user_session,
     validate_login_username,
     validate_password,
@@ -66,6 +71,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("tiktok-manager")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+REACT_DIST_DIR = STATIC_DIR / "react"
 
 
 def utcnow() -> datetime:
@@ -112,44 +118,75 @@ login_limiter = LoginLimiter()
 class ConnectionManager:
     def __init__(self):
         self.connections: dict[str, list[WebSocket]] = defaultdict(list)
+        self.session_users: dict[str, str] = {}
         self.lock = asyncio.Lock()
 
-    async def connect(self, user_id: str, websocket: WebSocket) -> None:
+    async def connect(self, session_id: str, user_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
         async with self.lock:
-            self.connections[user_id].append(websocket)
+            self.connections[session_id].append(websocket)
+            self.session_users[session_id] = user_id
 
-    async def disconnect(self, user_id: str, websocket: WebSocket) -> None:
+    async def disconnect(self, session_id: str, websocket: WebSocket) -> None:
         async with self.lock:
-            if websocket in self.connections.get(user_id, []):
-                self.connections[user_id].remove(websocket)
-            if not self.connections.get(user_id):
-                self.connections.pop(user_id, None)
+            if websocket in self.connections.get(session_id, []):
+                self.connections[session_id].remove(websocket)
+            if not self.connections.get(session_id):
+                self.connections.pop(session_id, None)
+                self.session_users.pop(session_id, None)
 
-    async def send(self, user_ids: set[str], event: str, payload: dict[str, Any]) -> None:
+    async def send_sessions(self, session_ids: set[str], event: str, payload: dict[str, Any]) -> None:
         message = json.dumps({"type": event, "data": payload}, ensure_ascii=False, default=str)
         stale: list[tuple[str, WebSocket]] = []
         async with self.lock:
-            targets = [(uid, ws) for uid in user_ids for ws in self.connections.get(uid, [])]
-        for uid, websocket in targets:
+            targets = [(sid, ws) for sid in session_ids for ws in self.connections.get(sid, [])]
+        for sid, websocket in targets:
             try:
                 await websocket.send_text(message)
             except Exception:
-                stale.append((uid, websocket))
-        for uid, websocket in stale:
-            await self.disconnect(uid, websocket)
+                stale.append((sid, websocket))
+        for sid, websocket in stale:
+            await self.disconnect(sid, websocket)
+
+    async def send_users(self, user_ids: set[str], event: str, payload: dict[str, Any]) -> None:
+        async with self.lock:
+            session_ids = {
+                sid for sid, uid in self.session_users.items() if uid in user_ids
+            }
+        if session_ids:
+            await self.send_sessions(session_ids, event, payload)
+
+    async def broadcast(self, event: str, payload: dict[str, Any]) -> None:
+        async with self.lock:
+            session_ids = set(self.connections)
+        if session_ids:
+            await self.send_sessions(session_ids, event, payload)
 
     async def dispatch_job_event(self, event: str, payload: dict[str, Any]) -> None:
-        recipients: set[str] = set()
-        requester = payload.get("requested_by")
-        if requester:
-            recipients.add(str(requester))
-        account = payload.get("account") or {}
-        owner_id = account.get("owner_id") or payload.get("owner_id")
-        if owner_id:
-            recipients.add(str(owner_id))
+        if event in {"job_started", "job_progress", "job_finished", "job_failed"}:
+            requested_session_id = payload.get("requested_session_id")
+            if requested_session_id:
+                await self.send_sessions({str(requested_session_id)}, event, payload)
+            elif payload.get("scheduled"):
+                with db_session() as db:
+                    boss_ids = {
+                        str(value) for value in db.scalars(
+                            select(User.id).where(User.role == "BOSS", User.is_active.is_(True))
+                        )
+                    }
+                await self.send_users(boss_ids, event, payload)
 
-        if payload.get("scheduled") or event == "alert":
+            # Other browsers receive only an invalidation after completion, never
+            # somebody else's progress bar or stop button.
+            if event in {"job_finished", "job_failed"}:
+                await self.broadcast("data_updated", {"source": "check_run"})
+            return
+
+        if event == "alert":
+            recipients: set[str] = set()
+            owner_id = payload.get("owner_id")
+            if owner_id:
+                recipients.add(str(owner_id))
             try:
                 with db_session() as db:
                     recipients.update(
@@ -157,10 +194,14 @@ class ConnectionManager:
                             select(User.id).where(User.role == "BOSS", User.is_active.is_(True))
                         )
                     )
+                    if owner_id:
+                        owner = db.get(User, uuid.UUID(str(owner_id)))
+                        if owner and owner.leader_id:
+                            recipients.add(str(owner.leader_id))
             except Exception:
                 pass
-        if recipients:
-            await self.send(recipients, event, payload)
+            if recipients:
+                await self.send_users(recipients, event, payload)
 
 
 ws_manager = ConnectionManager()
@@ -209,6 +250,20 @@ async def lifespan(app: FastAPI):
         status = test_database_connection()
         if not status["tables_ok"]:
             raise RuntimeError(f"Thiếu bảng: {', '.join(status['missing_tables'])}")
+        if not status.get("schema_ok", False):
+            raise RuntimeError(
+                "Database chưa chạy migration 002; thiếu cột: "
+                + ", ".join(status.get("missing_columns", []))
+            )
+
+        # Bounded operational data: keep audit for 180 days and revoked sessions
+        # for 30 days. Check history already keeps only the latest 20 runs/user.
+        with db_session() as db:
+            db.execute(delete(AuditLog).where(AuditLog.created_at < utcnow() - timedelta(days=180)))
+            db.execute(delete(UserSession).where(
+                UserSession.revoked_at.is_not(None),
+                UserSession.revoked_at < utcnow() - timedelta(days=30),
+            ))
 
         def event_bridge(event: str, payload: dict[str, Any]) -> None:
             asyncio.run_coroutine_threadsafe(
@@ -231,7 +286,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="TikTok Account Manager",
-    version="3.0.0",
+    version="4.0.0",
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
@@ -259,7 +314,17 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api/") else "no-cache"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; connect-src 'self' ws: wss:; "
+        "font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    )
+    if request.url.path.startswith("/api/") or request.url.path in {"/", "/legacy"}:
+        response.headers["Cache-Control"] = "no-store"
+    elif request.url.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 
@@ -282,11 +347,12 @@ class UserCreateRequest(BaseModel):
     username: str
     password: str
     full_name: str = Field(min_length=1, max_length=150)
-    role: Literal["LEADER", "MEMBER"]
+    role: Literal["BOSS", "LEADER", "MEMBER"]
     leader_id: str | None = None
     can_add_accounts: bool = False
     can_delete_accounts: bool = False
     can_run_checks: bool = True
+    show_in_org_chart: bool = True
 
 
 class UserUpdateRequest(BaseModel):
@@ -296,6 +362,7 @@ class UserUpdateRequest(BaseModel):
     can_add_accounts: bool | None = None
     can_delete_accounts: bool | None = None
     can_run_checks: bool | None = None
+    show_in_org_chart: bool | None = None
 
 
 class ResetPasswordRequest(BaseModel):
@@ -338,6 +405,10 @@ class SettingsUpdateRequest(BaseModel):
     voice_notifications_enabled: bool | None = None
 
 
+class SessionRevokeRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=100)
+
+
 def serialize_user(db: Session, user: User) -> dict[str, Any]:
     machine_count = db.scalar(select(func.count()).select_from(Machine).where(Machine.owner_id == user.id)) or 0
     account_count = db.scalar(
@@ -345,12 +416,23 @@ def serialize_user(db: Session, user: User) -> dict[str, Any]:
         .join(Machine, Machine.id == TikTokAccount.machine_id)
         .where(Machine.owner_id == user.id)
     ) or 0
+    active_session = db.scalar(
+        select(UserSession)
+        .where(
+            UserSession.user_id == user.id,
+            UserSession.revoked_at.is_(None),
+            UserSession.expires_at > utcnow(),
+        )
+        .order_by(UserSession.last_seen_at.desc())
+    )
     return {
         "id": str(user.id),
         "username": user.username,
         "full_name": user.full_name,
         "avatar_url": user.avatar_url,
         "role": user.role,
+        "is_system_owner": user.is_system_owner,
+        "show_in_org_chart": user.show_in_org_chart,
         "leader_id": str(user.leader_id) if user.leader_id else None,
         "is_active": user.is_active,
         "can_add_accounts": user.can_add_accounts,
@@ -359,6 +441,11 @@ def serialize_user(db: Session, user: User) -> dict[str, Any]:
         "machine_count": int(machine_count),
         "account_count": int(account_count),
         "last_login_at": iso(user.last_login_at),
+        "last_seen_at": iso(active_session.last_seen_at) if active_session else None,
+        "is_online": bool(
+            active_session and active_session.last_seen_at >= utcnow() - timedelta(minutes=2)
+        ),
+        "updated_at": iso(user.updated_at),
         "created_at": iso(user.created_at),
     }
 
@@ -438,6 +525,49 @@ def visible_owner_ids(db: Session, current: User) -> list[uuid.UUID]:
     return list(db.scalars(visible_users_query(current).with_only_columns(User.id)))
 
 
+def ensure_can_manage_user(actor: User, target: User | None = None, creating_role: str | None = None) -> None:
+    role = creating_role or (target.role if target else None)
+    if actor.role != "BOSS":
+        raise HTTPException(status_code=403, detail="Chỉ BOSS được quản lý nhân sự")
+    if role == "BOSS" and not actor.is_system_owner:
+        raise HTTPException(status_code=403, detail="Chỉ BOSS chính được quản lý tài khoản BOSS")
+    if target is not None and target.is_system_owner and target.id != actor.id:
+        raise HTTPException(status_code=403, detail="Không được thay đổi BOSS chính")
+
+
+def serialize_session(db: Session, row: UserSession, current_session_id: uuid.UUID) -> dict[str, Any]:
+    user = db.get(User, row.user_id)
+    return {
+        "id": str(row.id),
+        "user_id": str(row.user_id),
+        "user_name": user.full_name if user else "Tài khoản đã xóa",
+        "username": user.username if user else None,
+        "role": user.role if user else None,
+        "ip_address": row.ip_address,
+        "user_agent": row.user_agent,
+        "created_at": iso(row.created_at),
+        "last_seen_at": iso(row.last_seen_at),
+        "expires_at": iso(row.expires_at),
+        "revoked_at": iso(row.revoked_at),
+        "revoked_reason": row.revoked_reason,
+        "is_current": row.id == current_session_id,
+        "is_online": (
+            row.revoked_at is None
+            and row.expires_at > utcnow()
+            and row.last_seen_at >= utcnow() - timedelta(minutes=2)
+        ),
+    }
+
+
+def active_boss_count(db: Session) -> int:
+    return int(
+        db.scalar(
+            select(func.count(User.id)).where(User.role == "BOSS", User.is_active.is_(True))
+        )
+        or 0
+    )
+
+
 def get_job_manager(request: Request) -> JobManager:
     manager = getattr(request.app.state, "job_manager", None)
     if manager is None:
@@ -456,7 +586,7 @@ def health(request: Request):
 
 
 @app.post("/api/auth/login")
-def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+async def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     ip = request.client.host if request.client else "unknown"
     key = f"{ip}:{payload.username.lower()}"
     login_limiter.ensure_allowed(key)
@@ -476,30 +606,66 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     if replacement:
         user.password_hash = replacement
     mark_login(db, user)
-    csrf_token = start_user_session(request, user)
+    forwarded_ip = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    ip_address = forwarded_ip or (request.client.host if request.client else None)
+    csrf_token, user_session, revoked_ids = start_user_session(
+        request,
+        db,
+        user,
+        ip_address=ip_address,
+        user_agent=request.headers.get("user-agent"),
+    )
+    write_audit(db, request, user, "AUTH_LOGIN", "SESSION", user_session.id)
+    db.commit()
+    if revoked_ids:
+        await ws_manager.send_sessions(
+            set(revoked_ids),
+            "session_revoked",
+            {"reason": "Tài khoản vừa đăng nhập trên thiết bị khác"},
+        )
     login_limiter.success(key)
-    return {"success": True, "user": serialize_user(db, user), "csrf_token": csrf_token}
+    return {
+        "success": True,
+        "user": serialize_user(db, user),
+        "session_id": str(user_session.id),
+        "csrf_token": csrf_token,
+    }
 
 
 @app.post("/api/auth/logout")
-def logout(request: Request, _current: User = Depends(csrf_protect)):
-    end_user_session(request)
+async def logout(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(csrf_protect),
+    current_session: UserSession = Depends(get_current_session),
+):
+    write_audit(db, request, current, "AUTH_LOGOUT", "SESSION", current_session.id)
+    end_user_session(request, db)
+    db.commit()
     return {"success": True}
 
 
 @app.get("/api/auth/me")
-def me(request: Request, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+def me(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    current_session: UserSession = Depends(get_current_session),
+):
     return {
         "user": serialize_user(db, current),
+        "session_id": str(current_session.id),
         "csrf_token": request.session.get("csrf_token"),
     }
 
 
 @app.post("/api/auth/change-password")
-def change_password(
+async def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
+    current_session: UserSession = Depends(get_current_session),
 ):
     valid, _ = verify_password(payload.current_password, current.password_hash)
     if not valid:
@@ -509,7 +675,18 @@ def change_password(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     current.password_changed_at = utcnow()
+    revoked_ids = revoke_user_sessions(
+        db,
+        current.id,
+        "PASSWORD_CHANGED",
+        except_session_id=current_session.id,
+    )
+    write_audit(db, request, current, "PASSWORD_CHANGED", "USER", current.id)
     db.commit()
+    if revoked_ids:
+        await ws_manager.send_sessions(
+            set(revoked_ids), "session_revoked", {"reason": "Mật khẩu đã được thay đổi"}
+        )
     return {"success": True}
 
 
@@ -519,12 +696,15 @@ def list_users(db: Session = Depends(get_db), current: User = Depends(get_curren
 
 
 @app.post("/api/users")
-def create_user(
+async def create_user(
     payload: UserCreateRequest,
+    request: Request,
     db: Session = Depends(get_db),
-    _boss: User = Depends(require_roles("BOSS")),
-    _csrf: User = Depends(csrf_protect),
+    current: User = Depends(csrf_protect),
 ):
+    ensure_can_manage_user(current, creating_role=payload.role)
+    if payload.role == "BOSS" and active_boss_count(db) >= 3:
+        raise HTTPException(status_code=409, detail="Đã đủ 3 tài khoản BOSS đang hoạt động")
     try:
         username = validate_login_username(payload.username)
         password_hash = hash_password(payload.password)
@@ -546,34 +726,47 @@ def create_user(
         full_name=payload.full_name.strip(),
         role=payload.role,
         leader_id=leader_id,
-        can_add_accounts=payload.can_add_accounts,
-        can_delete_accounts=payload.can_delete_accounts,
-        can_run_checks=payload.can_run_checks,
+        can_add_accounts=True if payload.role == "BOSS" else payload.can_add_accounts,
+        can_delete_accounts=True if payload.role == "BOSS" else payload.can_delete_accounts,
+        can_run_checks=True if payload.role == "BOSS" else payload.can_run_checks,
+        show_in_org_chart=payload.show_in_org_chart,
+        is_system_owner=False,
     )
     db.add(user)
     try:
+        write_audit(
+            db,
+            request,
+            current,
+            "USER_CREATED",
+            "USER",
+            user.id,
+            {"username": user.username, "role": user.role},
+        )
         db.commit()
         db.refresh(user)
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Tên đăng nhập đã tồn tại") from exc
+    await ws_manager.broadcast("directory_updated", {"user_id": str(user.id)})
     return {"user": serialize_user(db, user)}
 
 
 @app.patch("/api/users/{user_id}")
-def update_user(
+async def update_user(
     user_id: str,
     payload: UserUpdateRequest,
+    request: Request,
     db: Session = Depends(get_db),
-    _boss: User = Depends(require_roles("BOSS")),
-    _csrf: User = Depends(csrf_protect),
+    current: User = Depends(csrf_protect),
 ):
     target = db.get(User, parse_uuid(user_id, "User ID"))
     if target is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
-    if target.role == "BOSS":
-        raise HTTPException(status_code=403, detail="Không chỉnh sửa tài khoản BOSS tại màn quản lý nhân sự")
+    ensure_can_manage_user(current, target=target)
     values = payload.model_dump(exclude_unset=True)
+    if target.is_system_owner and values.get("is_active") is False:
+        raise HTTPException(status_code=422, detail="Không thể khóa tài khoản BOSS chính")
     if "leader_id" in values:
         if target.role != "MEMBER":
             raise HTTPException(status_code=422, detail="Chỉ Member mới được gán Leader")
@@ -585,31 +778,60 @@ def update_user(
         target.leader_id = leader.id
     for field, value in values.items():
         setattr(target, field, value.strip() if field == "full_name" and value else value)
+    revoked_ids: list[str] = []
+    if values.get("is_active") is False:
+        revoked_ids = revoke_user_sessions(db, target.id, "ACCOUNT_DISABLED")
     try:
+        write_audit(
+            db,
+            request,
+            current,
+            "USER_UPDATED",
+            "USER",
+            target.id,
+            {"fields": sorted(values)},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc.orig)) from exc
+    if revoked_ids:
+        await ws_manager.send_sessions(
+            set(revoked_ids), "session_revoked", {"reason": "Tài khoản đã bị khóa"}
+        )
+    await ws_manager.broadcast("directory_updated", {"user_id": str(target.id)})
+    await ws_manager.send_users(
+        {str(target.id)}, "permissions_updated", {"user_id": str(target.id)}
+    )
     return {"user": serialize_user(db, target)}
 
 
 @app.post("/api/users/{user_id}/reset-password")
-def reset_password(
+async def reset_password(
     user_id: str,
     payload: ResetPasswordRequest,
+    request: Request,
     db: Session = Depends(get_db),
-    _boss: User = Depends(require_roles("BOSS")),
-    _csrf: User = Depends(csrf_protect),
+    current: User = Depends(csrf_protect),
 ):
     target = db.get(User, parse_uuid(user_id, "User ID"))
     if target is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    ensure_can_manage_user(current, target=target)
+    if target.id == current.id:
+        raise HTTPException(status_code=422, detail="Hãy dùng chức năng Đổi mật khẩu cho tài khoản hiện tại")
     try:
         target.password_hash = hash_password(payload.new_password)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     target.password_changed_at = utcnow()
+    revoked_ids = revoke_user_sessions(db, target.id, "PASSWORD_RESET")
+    write_audit(db, request, current, "PASSWORD_RESET", "USER", target.id)
     db.commit()
+    if revoked_ids:
+        await ws_manager.send_sessions(
+            set(revoked_ids), "session_revoked", {"reason": "BOSS đã đặt lại mật khẩu"}
+        )
     return {"success": True}
 
 @app.post("/api/users/{user_id}/avatar")
@@ -634,16 +856,11 @@ async def upload_user_avatar(
             status_code=403,
             detail="Bạn không được đổi ảnh của người khác"
         )
+    if target.role == "BOSS" and current.id != target.id:
+        ensure_can_manage_user(current, target=target)
 
-    allowed_types = {
-        "image/jpeg": "jpg",
-        "image/png": "png",
-        "image/webp": "webp",
-    }
-
-    extension = allowed_types.get(avatar.content_type or "")
-
-    if extension is None:
+    allowed_formats = {"JPEG", "PNG", "WEBP"}
+    if avatar.content_type not in {"image/jpeg", "image/png", "image/webp"}:
         raise HTTPException(
             status_code=422,
             detail="Chỉ chấp nhận ảnh JPG, PNG hoặc WebP"
@@ -664,6 +881,22 @@ async def upload_user_avatar(
             detail="Ảnh đại diện không được vượt quá 2 MB"
         )
 
+    # Verify actual image bytes, resize and strip metadata before public storage.
+    try:
+        with Image.open(BytesIO(image_data)) as source:
+            if source.format not in allowed_formats:
+                raise ValueError("unsupported format")
+            if source.width * source.height > 20_000_000:
+                raise ValueError("image dimensions too large")
+            source.load()
+            source.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            normalized = source.convert("RGBA" if "A" in source.getbands() else "RGB")
+            output = BytesIO()
+            normalized.save(output, format="WEBP", quality=86, method=4)
+            image_data = output.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError):
+        raise HTTPException(status_code=422, detail="Nội dung file không phải ảnh hợp lệ")
+
     if (
         not settings.supabase_url
         or not settings.supabase_service_role_key
@@ -673,7 +906,7 @@ async def upload_user_avatar(
             detail="Server chưa cấu hình Supabase Storage"
         )
 
-    object_name = f"{target.id}.{extension}"
+    object_name = f"{target.id}.webp"
 
     upload_url = (
         f"{settings.supabase_url}"
@@ -689,7 +922,7 @@ async def upload_user_avatar(
                 f"Bearer {settings.supabase_service_role_key}"
             ),
             "apikey": settings.supabase_service_role_key,
-            "Content-Type": avatar.content_type,
+            "Content-Type": "image/webp",
             "x-upsert": "true",
         },
     )
@@ -729,8 +962,10 @@ async def upload_user_avatar(
     )
 
     target.avatar_url = avatar_url
+    write_audit(db, request, current, "AVATAR_UPDATED", "USER", target.id)
     db.commit()
     db.refresh(target)
+    await ws_manager.broadcast("directory_updated", {"user_id": str(target.id)})
 
     return {
         "success": True,
@@ -752,8 +987,9 @@ def list_machines(
 
 
 @app.post("/api/machines")
-def create_machine(
+async def create_machine(
     payload: MachineCreateRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
 ):
@@ -761,7 +997,7 @@ def create_machine(
     owner = db.get(User, owner_id)
     if owner is None or not owner.is_active:
         raise HTTPException(status_code=404, detail="Không tìm thấy người sở hữu")
-    ensure_can_manage_own_accounts(current, owner_id, "can_add_accounts")
+    ensure_can_manage_accounts(db, current, owner_id, "can_add_accounts")
 
     machine_count = db.scalar(
         select(func.count(Machine.id)).where(Machine.owner_id == owner_id)
@@ -780,17 +1016,24 @@ def create_machine(
     )
     db.add(machine)
     try:
+        db.flush()
+        write_audit(
+            db, request, current, "MACHINE_CREATED", "MACHINE", machine.id,
+            {"owner_id": str(owner_id), "machine_number": machine.machine_number},
+        )
         db.commit()
         db.refresh(machine)
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Số máy này đã tồn tại") from exc
+    await ws_manager.broadcast("data_updated", {"source": "machine", "owner_id": str(owner_id)})
     return {"machine": serialize_machine(db, machine)}
 
 
 @app.delete("/api/machines/{machine_id}")
-def delete_machine(
+async def delete_machine(
     machine_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
 ):
@@ -798,15 +1041,25 @@ def delete_machine(
     machine = db.get(Machine, machine_uuid)
     if machine is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy máy")
-    ensure_can_manage_own_accounts(current, machine.owner_id, "can_delete_accounts")
+    ensure_can_manage_accounts(
+    db, current, machine.owner_id, "can_delete_accounts"
+)
+    owner_id = machine.owner_id
+    machine_number = machine.machine_number
+    write_audit(
+        db, request, current, "MACHINE_DELETED", "MACHINE", machine.id,
+        {"owner_id": str(owner_id), "machine_number": machine_number},
+    )
     db.delete(machine)
     db.commit()
+    await ws_manager.broadcast("data_updated", {"source": "machine", "owner_id": str(owner_id)})
     return {"success": True, "message": "Đã xóa máy và toàn bộ kênh thuộc máy"}
 
 
 @app.post("/api/accounts/bulk")
-def add_accounts_bulk(
+async def add_accounts_bulk(
     payload: BulkAccountsRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
 ):
@@ -814,7 +1067,9 @@ def add_accounts_bulk(
     machine = db.get(Machine, machine_id)
     if machine is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy máy")
-    ensure_can_manage_own_accounts(current, machine.owner_id, "can_add_accounts")
+    ensure_can_manage_accounts(
+    db, current, machine.owner_id, "can_add_accounts"
+)
 
     occupied = set(db.scalars(select(TikTokAccount.slot_number).where(TikTokAccount.machine_id == machine.id)))
     available = deque(slot for slot in range(1, 11) if slot not in occupied)
@@ -859,10 +1114,17 @@ def add_accounts_bulk(
         db.flush()
         added.append({"id": str(account.id), "username": username, "slot_number": account.slot_number})
     try:
+        write_audit(
+            db, request, current, "ACCOUNTS_ADDED", "MACHINE", machine.id,
+            {"owner_id": str(machine.owner_id), "count": len(added)},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Có username hoặc vị trí kênh bị trùng") from exc
+    await ws_manager.broadcast(
+        "data_updated", {"source": "accounts", "owner_id": str(machine.owner_id)}
+    )
     return {"added": added, "rejected": rejected}
 
 
@@ -899,8 +1161,9 @@ def list_accounts(
 
 
 @app.delete("/api/accounts/{account_id}")
-def delete_account(
+async def delete_account(
     account_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
 ):
@@ -908,20 +1171,28 @@ def delete_account(
     if account is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
     owner_id = machine_owner(db, account.machine_id)
-    ensure_can_manage_own_accounts(current, owner_id, "can_delete_accounts")
+    ensure_can_manage_accounts(db, current, owner_id, "can_delete_accounts")
+    username = account.username
+    write_audit(
+        db, request, current, "ACCOUNT_DELETED", "TIKTOK_ACCOUNT", account.id,
+        {"owner_id": str(owner_id), "username": username},
+    )
     db.delete(account)
     db.commit()
+    await ws_manager.broadcast("data_updated", {"source": "account", "owner_id": str(owner_id)})
     return {"success": True}
 
 
 @app.patch("/api/accounts/{account_id}/transfer")
-def transfer_account(
+async def transfer_account(
     account_id: str,
     payload: TransferAccountRequest,
+    request: Request,
     db: Session = Depends(get_db),
-    _boss: User = Depends(require_roles("BOSS")),
-    _csrf: User = Depends(csrf_protect),
+    current: User = Depends(csrf_protect),
 ):
+    if current.role != "BOSS":
+        raise HTTPException(status_code=403, detail="Chỉ BOSS được chuyển kênh")
     account = db.get(TikTokAccount, parse_uuid(account_id, "Account ID"))
     target_machine = db.get(Machine, parse_uuid(payload.machine_id, "Machine ID"))
     if account is None or target_machine is None:
@@ -933,9 +1204,20 @@ def transfer_account(
     ))
     if occupied:
         raise HTTPException(status_code=409, detail="Vị trí kênh trên máy đích đã được sử dụng")
+    old_owner_id = machine_owner(db, account.machine_id)
     account.machine_id = target_machine.id
     account.slot_number = payload.slot_number
+    write_audit(
+        db, request, current, "ACCOUNT_TRANSFERRED", "TIKTOK_ACCOUNT", account.id,
+        {
+            "username": account.username,
+            "from_owner_id": str(old_owner_id),
+            "to_owner_id": str(target_machine.owner_id),
+            "slot_number": payload.slot_number,
+        },
+    )
     db.commit()
+    await ws_manager.broadcast("data_updated", {"source": "account_transfer"})
     return {"success": True}
 
 
@@ -1008,11 +1290,12 @@ def global_search(
 
 
 @app.post("/api/check-runs")
-def start_check(
+async def start_check(
     payload: CheckStartRequest,
     request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
+    current_session: UserSession = Depends(get_current_session),
 ):
     manager = get_job_manager(request)
     target_id = parse_uuid(payload.target_user_id, "Target User ID") if payload.target_user_id else None
@@ -1047,6 +1330,7 @@ def start_check(
     try:
         run = manager.start_job(
             requested_by=current.id,
+            requested_session_id=current_session.id,
             trigger_type="MANUAL",
             scope_type=payload.scope_type,
             target_user_id=target_id,
@@ -1055,39 +1339,58 @@ def start_check(
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    write_audit(
+        db,
+        request,
+        current,
+        "CHECK_STARTED",
+        "CHECK_RUN",
+        run["id"],
+        {"scope_type": payload.scope_type, "target_user_id": payload.target_user_id},
+    )
+    db.commit()
     return {"run": run}
 
 
 @app.get("/api/check-runs/current")
-def current_check_run(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+def current_check_run(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    current_session: UserSession = Depends(get_current_session),
+):
     query = select(CheckRun).where(
         CheckRun.status.in_(("QUEUED", "RUNNING")),
-        CheckRun.requested_by == current.id,
+        CheckRun.requested_session_id == current_session.id,
     )
     if current.role == "BOSS":
         query = select(CheckRun).where(
             CheckRun.status.in_(("QUEUED", "RUNNING")),
-            or_(CheckRun.requested_by == current.id, CheckRun.trigger_type == "SCHEDULED"),
+            or_(CheckRun.requested_session_id == current_session.id, CheckRun.trigger_type == "SCHEDULED"),
         )
     runs = db.scalars(query.order_by(CheckRun.created_at.desc()))
     return {"runs": [JobManager.serialize_run(run) for run in runs]}
 
 
 @app.post("/api/check-runs/{run_id}/stop")
-def stop_check_run(
+async def stop_check_run(
     run_id: str,
     request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
+    current_session: UserSession = Depends(get_current_session),
 ):
     run_uuid = parse_uuid(run_id, "Run ID")
     run = db.get(CheckRun, run_uuid)
     if run is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy job")
-    if current.role != "BOSS" and run.requested_by != current.id:
-        raise HTTPException(status_code=403, detail="Không được dừng job của người khác")
+    if run.trigger_type == "MANUAL" and run.requested_session_id != current_session.id:
+        raise HTTPException(status_code=403, detail="Chỉ thiết bị khởi tạo mới được dừng job này")
+    if run.trigger_type == "SCHEDULED" and current.role != "BOSS":
+        raise HTTPException(status_code=403, detail="Chỉ BOSS được dừng lịch check tự động")
     if not get_job_manager(request).stop_job(run_uuid):
         raise HTTPException(status_code=409, detail="Job đã kết thúc")
+    write_audit(db, request, current, "CHECK_STOP_REQUESTED", "CHECK_RUN", run.id)
+    db.commit()
     return {"success": True}
 
 
@@ -1119,8 +1422,9 @@ def get_settings(db: Session = Depends(get_db), current: User = Depends(get_curr
 
 
 @app.patch("/api/settings")
-def update_settings(
+async def update_settings(
     payload: SettingsUpdateRequest,
+    request: Request,
     db: Session = Depends(get_db),
     boss: User = Depends(require_roles("BOSS")),
     _csrf: User = Depends(csrf_protect),
@@ -1141,45 +1445,174 @@ def update_settings(
         row.next_auto_check_at = utcnow() + timedelta(minutes=row.check_interval_minutes)
     elif not row.auto_check_enabled:
         row.next_auto_check_at = None
+    write_audit(db, request, boss, "SETTINGS_UPDATED", "APP_SETTINGS", 1, {"fields": sorted(values)})
     db.commit()
+    await ws_manager.broadcast("settings_updated", {"updated_by": str(boss.id)})
     return {
         "success": True,
         "message": "Đã lưu. Thay đổi tổng worker có hiệu lực hoàn toàn sau khi restart server.",
     }
 
 
+@app.get("/api/organization")
+def organization(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    if current.role == "MEMBER" and current.leader_id:
+        users = list(
+            db.scalars(
+                select(User).where(User.id.in_((current.id, current.leader_id)))
+            )
+        )
+    else:
+        users = list(db.scalars(visible_users_query(current)))
+    nodes = [
+        serialize_user(db, user)
+        for user in users
+        if user.show_in_org_chart and user.is_active
+    ]
+    return {"users": nodes}
+
+
+@app.get("/api/sessions")
+def list_sessions(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    current_session: UserSession = Depends(get_current_session),
+):
+    query = select(UserSession)
+    if current.role != "BOSS":
+        query = query.where(UserSession.user_id == current.id)
+    rows = db.scalars(query.order_by(UserSession.created_at.desc()).limit(100))
+    return {"sessions": [serialize_session(db, row, current_session.id) for row in rows]}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def revoke_session(
+    session_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(csrf_protect),
+    current_session: UserSession = Depends(get_current_session),
+):
+    target = db.get(UserSession, parse_uuid(session_id, "Session ID"))
+    if target is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiên đăng nhập")
+    target_user = db.get(User, target.user_id)
+    if target.user_id != current.id and current.role != "BOSS":
+        raise HTTPException(status_code=403, detail="Không được đăng xuất phiên của người khác")
+    if target_user and target_user.is_system_owner and target.user_id != current.id:
+        raise HTTPException(status_code=403, detail="Không được đăng xuất BOSS chính")
+    if target.revoked_at is None:
+        target.revoked_at = utcnow()
+        target.revoked_reason = "FORCE_LOGOUT" if target.id != current_session.id else "LOGOUT"
+    write_audit(db, request, current, "SESSION_REVOKED", "SESSION", target.id)
+    is_current = target.id == current_session.id
+    if is_current:
+        request.session.clear()
+    db.commit()
+    await ws_manager.send_sessions(
+        {str(target.id)}, "session_revoked", {"reason": "Phiên đăng nhập đã được thu hồi"}
+    )
+    return {"success": True, "current_session_revoked": is_current}
+
+
+@app.get("/api/audit-logs")
+def list_audit_logs(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    _boss: User = Depends(require_roles("BOSS")),
+):
+    safe_limit = max(1, min(limit, 200))
+    rows = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(safe_limit))
+    result = []
+    for row in rows:
+        actor = db.get(User, row.actor_user_id) if row.actor_user_id else None
+        result.append({
+            "id": row.id,
+            "actor_user_id": str(row.actor_user_id) if row.actor_user_id else None,
+            "actor_name": actor.full_name if actor else "Hệ thống",
+            "action": row.action,
+            "entity_type": row.entity_type,
+            "entity_id": row.entity_id,
+            "details": row.details or {},
+            "ip_address": row.ip_address,
+            "created_at": iso(row.created_at),
+        })
+    return {"logs": result}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     session = websocket.scope.get("session", {})
     user_id = session.get("user_id")
-    if not user_id:
+    session_id = session.get("session_id")
+    if not user_id or not session_id:
         await websocket.close(code=4401)
         return
     try:
         with db_session() as db:
             user = db.get(User, uuid.UUID(user_id))
-            if user is None or not user.is_active:
+            active_session = db.get(UserSession, uuid.UUID(session_id))
+            if (
+                user is None
+                or not user.is_active
+                or active_session is None
+                or active_session.user_id != user.id
+                or active_session.revoked_at is not None
+                or active_session.expires_at <= utcnow()
+            ):
                 await websocket.close(code=4401)
                 return
     except Exception:
         await websocket.close(code=1011)
         return
-    await ws_manager.connect(user_id, websocket)
+    await ws_manager.connect(session_id, user_id, websocket)
     try:
-        await websocket.send_text(json.dumps({"type": "connected", "data": {"user_id": user_id}}))
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "data": {"user_id": user_id, "session_id": session_id},
+        }))
         while True:
             message = await websocket.receive_text()
             if message == "ping":
+                with db_session() as db:
+                    active_session = db.get(UserSession, uuid.UUID(session_id))
+                    if active_session is None or active_session.revoked_at is not None:
+                        await websocket.close(code=4401)
+                        return
+                    active_session.last_seen_at = utcnow()
                 await websocket.send_text('{"type":"pong","data":{}}')
     except WebSocketDisconnect:
-        await ws_manager.disconnect(user_id, websocket)
+        await ws_manager.disconnect(session_id, websocket)
+    finally:
+        await ws_manager.disconnect(session_id, websocket)
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+if (REACT_DIST_DIR / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(REACT_DIST_DIR / "assets")), name="react-assets")
 
-@app.get("/", response_class=HTMLResponse)
+
+@app.get("/legacy", response_class=HTMLResponse)
+def legacy():
+    return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def root():
+    react_index = REACT_DIST_DIR / "index.html"
+    if react_index.exists():
+        return HTMLResponse(react_index.read_text(encoding="utf-8"))
+    return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+def frontend(full_path: str):
+    if full_path.startswith(("api/", "ws")):
+        raise HTTPException(status_code=404, detail="Không tìm thấy API")
+    react_index = REACT_DIST_DIR / "index.html"
+    if react_index.exists():
+        return HTMLResponse(react_index.read_text(encoding="utf-8"))
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
 

@@ -1,11 +1,19 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, Edit3, Plus, ShieldCheck, UserRound } from "lucide-react";
+import {
+  Camera,
+  Edit3,
+  Handshake,
+  LockKeyhole,
+  Plus,
+  ShieldCheck,
+  UserRound,
+} from "lucide-react";
 import { api, notify } from "../api";
 import { useAuth } from "../AuthContext";
 import { Avatar } from "../components/Avatar";
 import { Modal } from "../components/Modal";
-import type { Role, User } from "../types";
+import type { Department, Role, User } from "../types";
 import { formatTime } from "../utils";
 
 export function PeoplePage() {
@@ -15,9 +23,54 @@ export function PeoplePage() {
   const { data } = useQuery({ queryKey: ["users"], queryFn: () => api<{ users: User[] }>("/api/users") });
   const users = data?.users || [];
 
+  const organizationQuery = useQuery({
+    queryKey: ["organization"],
+    queryFn: () =>
+      api<{
+        users: User[];
+        departments: Department[];
+      }>("/api/organization"),
+  });
+
+  const departments = organizationQuery.data?.departments || [];
+
+  const updateDepartment = useMutation({
+    mutationFn: ({
+      id,
+      enabled,
+    }: {
+      id: string;
+      enabled: boolean;
+    }) =>
+      api(`/api/departments/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          leader_collaboration_enabled: enabled,
+        }),
+      }),
+
+    onSuccess: async () => {
+      notify("Đã cập nhật quyền hợp tác của phòng", "success");
+
+      await queryClient.invalidateQueries({
+        queryKey: ["organization"],
+      });
+
+      await queryClient.invalidateQueries({
+        queryKey: ["users"],
+      });
+    },
+
+    onError: (error) =>
+      notify((error as Error).message, "error"),
+  });
+
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: ["users"] });
     await queryClient.invalidateQueries({ queryKey: ["organization"] });
+    await queryClient.invalidateQueries({
+      queryKey: ["organization"],
+    });
   }
 
   async function uploadAvatar(target: User, file?: File) {
@@ -34,6 +87,58 @@ export function PeoplePage() {
   return (
     <div className="page-stack">
       <div className="page-heading"><div><p className="eyebrow">QUẢN TRỊ</p><h1>Nhân sự và quyền</h1><p>Quản lý tài khoản đăng nhập, phạm vi và quyền thao tác.</p></div><button className="button primary" onClick={() => setEditing("new")}><Plus size={17} /> Thêm nhân sự</button></div>
+      <section className="panel department-settings">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">PHÒNG BAN</p>
+            <h2>Quyền hợp tác</h2>
+          </div>
+        </div>
+
+        <div className="department-setting-list">
+          {departments.map((department) => (
+            <div
+              className="department-setting-row"
+              key={department.id}
+            >
+              <span className="department-setting-name">
+                {department.leader_collaboration_enabled ? (
+                  <Handshake size={18} />
+                ) : (
+                  <LockKeyhole size={18} />
+                )}
+
+                <span>
+                  <strong>Phòng {department.name}</strong>
+                  <small>
+                    {department.leader_collaboration_enabled
+                      ? "Leader được xem và check toàn phòng"
+                      : "Leader chỉ xem nhóm trực thuộc"}
+                  </small>
+                </span>
+              </span>
+
+              <label className="switch-control">
+                <input
+                  type="checkbox"
+                  checked={
+                    department.leader_collaboration_enabled
+                  }
+                  disabled={updateDepartment.isPending}
+                  onChange={(event) =>
+                    updateDepartment.mutate({
+                      id: department.id,
+                      enabled: event.target.checked,
+                    })
+                  }
+                />
+
+                <span />
+              </label>
+            </div>
+          ))}
+        </div>
+      </section>
       <section className="panel table-panel">
         <div className="table-scroll"><table><thead><tr><th>Nhân sự</th><th>Vai trò</th><th>Phạm vi</th><th>Quyền</th><th>Hoạt động</th><th /></tr></thead><tbody>
           {users.map((person) => <tr key={person.id}>

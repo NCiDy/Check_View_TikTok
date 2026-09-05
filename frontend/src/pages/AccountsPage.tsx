@@ -7,7 +7,12 @@ import { useAuth } from "../AuthContext";
 import { Avatar } from "../components/Avatar";
 import { Modal } from "../components/Modal";
 import { useStartCheck } from "../hooks/useStartCheck";
-import type { Machine, TikTokAccount, User } from "../types";
+import type {
+  Department,
+  Machine,
+  TikTokAccount,
+  User,
+} from "../types";
 import { formatNumber, formatTime, statusLabel } from "../utils";
 
 type Dialog = "machine" | "accounts" | "detail" | "transfer" | null;
@@ -27,6 +32,17 @@ export function AccountsPage() {
 
   const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: () => api<{ users: User[] }>("/api/users") });
+  const organizationQuery = useQuery({
+    queryKey: ["organization"],
+    queryFn: () =>
+      api<{
+        users: User[];
+        departments: Department[];
+      }>("/api/organization"),
+  });
+
+  const departments =
+    organizationQuery.data?.departments || [];
   const machinesQuery = useQuery({
     queryKey: ["machines", ownerId],
     queryFn: () => api<{ machines: Machine[] }>(`/api/machines?owner_id=${encodeURIComponent(ownerId)}`),
@@ -118,21 +134,59 @@ export function AccountsPage() {
       (item) => item.is_active
     );
 
-  const teamGroups = groups.leaders
-    .filter((leader) => leader.is_active)
+  const activeLeaders = groups.leaders.filter(
+    (leader) => leader.is_active
+  );
+
+  const activeMembers = groups.members.filter(
+    (member) => member.is_active
+  );
+
+  const departmentGroups = departments.map((department) => {
+    const leaders = activeLeaders
+      .filter(
+        (leader) =>
+          leader.department_id === department.id
+      )
+      .map((leader) => ({
+        leader,
+        members: activeMembers.filter(
+          (member) => member.leader_id === leader.id
+        ),
+      }));
+
+    return {
+      department,
+      leaders,
+    };
+  });
+
+  const assignedLeaderIds = new Set(
+    departmentGroups.flatMap((group) =>
+      group.leaders.map((team) => team.leader.id)
+    )
+  );
+
+  const unassignedTeams = activeLeaders
+    .filter((leader) => !assignedLeaderIds.has(leader.id))
     .map((leader) => ({
       leader,
-      members: groups.members.filter(
-        (member) => member.is_active && member.leader_id === leader.id
+      members: activeMembers.filter(
+        (member) => member.leader_id === leader.id
       ),
     }));
 
   const groupedMemberIds = new Set(
-    teamGroups.flatMap((team) => team.members.map((member) => member.id))
+    [
+      ...departmentGroups.flatMap((group) =>
+        group.leaders.flatMap((team) => team.members)
+      ),
+      ...unassignedTeams.flatMap((team) => team.members),
+    ].map((member) => member.id)
   );
 
-  const standaloneMembers = groups.members.filter(
-    (member) => member.is_active && !groupedMemberIds.has(member.id)
+  const standaloneMembers = activeMembers.filter(
+    (member) => !groupedMemberIds.has(member.id)
   );
 
   function renderPerson(item: User, extraClass = "") {
@@ -185,19 +239,67 @@ export function AccountsPage() {
             </div>
           )}
 
-          {teamGroups.map(({ leader, members }) => (
-            <div className="scope-team" key={leader.id}>
-              {renderPerson(leader, "team-leader")}
+          {departmentGroups.map(({ department, leaders }) => (
+            <div className="scope-department" key={department.id}>
+              <div className="scope-department-heading">
+                <strong>Phòng {department.name}</strong>
 
-              {members.length > 0 && (
-                <div className="team-members">
-                  {members.map((member) =>
-                    renderPerson(member, "team-member")
+                <small
+                  className={
+                    department.leader_collaboration_enabled
+                      ? "collaboration-on"
+                      : ""
+                  }
+                >
+                  {department.leader_collaboration_enabled
+                    ? "Hợp tác"
+                    : "Riêng nhóm"}
+                </small>
+              </div>
+
+              {leaders.map(({ leader, members }) => (
+                <div className="scope-team" key={leader.id}>
+                  {renderPerson(leader, "team-leader")}
+
+                  {members.length > 0 && (
+                    <div className="team-members">
+                      {members.map((member) =>
+                        renderPerson(member, "team-member")
+                      )}
+                    </div>
                   )}
+                </div>
+              ))}
+
+              {!leaders.length && (
+                <div className="scope-empty">
+                  Chưa có Leader
                 </div>
               )}
             </div>
           ))}
+
+          {unassignedTeams.length > 0 && (
+            <div className="scope-department unassigned">
+              <div className="scope-department-heading">
+                <strong>Chưa phân phòng</strong>
+              </div>
+
+              {unassignedTeams.map(({ leader, members }) => (
+                <div className="scope-team" key={leader.id}>
+                  {renderPerson(leader, "team-leader")}
+
+                  {members.length > 0 && (
+                    <div className="team-members">
+                      {members.map((member) =>
+                        renderPerson(member, "team-member")
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
           {standaloneMembers.length > 0 && (
             <div className="scope-team standalone-team">

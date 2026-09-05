@@ -19,6 +19,13 @@ export interface User {
   last_seen_at?: string | null;
   is_online: boolean;
   created_at?: string | null;
+  department_id?: string | null;
+}
+
+export interface Department {
+  id: string;
+  name: string;
+  leader_collaboration_enabled: boolean;
 }
 
 export interface Machine {

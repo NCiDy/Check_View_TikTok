@@ -8,7 +8,7 @@ from .models import Machine, User
 
 
 def can_view_user(db: Session, actor: User, target_id: uuid.UUID) -> bool:
-    if actor.role == "BOSS" or actor.id == target_id:
+    if actor.role in {"BOSS", "MANAGER"} or actor.id == target_id:
         return True
     if actor.role == "LEADER":
         return db.scalar(
@@ -34,7 +34,7 @@ def can_manage_accounts(
     permission: str,
 ) -> bool:
     # BOSS quản lý toàn công ty.
-    if actor.role == "BOSS":
+    if actor.role in {"BOSS", "MANAGER"}:
         return True
 
     # Tài khoản phải được BOSS cấp đúng quyền.
@@ -81,7 +81,7 @@ def machine_owner(db: Session, machine_id: uuid.UUID) -> uuid.UUID:
 
 
 def ensure_can_start_manual_check(db: Session, actor: User, target_id: uuid.UUID) -> None:
-    if actor.role != "BOSS" and not actor.can_run_checks:
+    if actor.role not in {"BOSS", "MANAGER"} and not actor.can_run_checks:
         raise HTTPException(status_code=403, detail="BOSS đã tắt quyền check của bạn")
     ensure_can_view_user(db, actor, target_id)
 

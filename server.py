@@ -171,7 +171,7 @@ class ConnectionManager:
                 with db_session() as db:
                     boss_ids = {
                         str(value) for value in db.scalars(
-                            select(User.id).where(User.role == "BOSS", User.is_active.is_(True))
+                            select(User.id).where(User.role.in_(("BOSS", "MANAGER")), User.is_active.is_(True))
                         )
                     }
                 await self.send_users(boss_ids, event, payload)
@@ -191,7 +191,7 @@ class ConnectionManager:
                 with db_session() as db:
                     recipients.update(
                         str(value) for value in db.scalars(
-                            select(User.id).where(User.role == "BOSS", User.is_active.is_(True))
+                            select(User.id).where(User.role.in_(("BOSS", "MANAGER")), User.is_active.is_(True))
                         )
                     )
                     if owner_id:
@@ -347,7 +347,7 @@ class UserCreateRequest(BaseModel):
     username: str
     password: str
     full_name: str = Field(min_length=1, max_length=150)
-    role: Literal["BOSS", "LEADER", "MEMBER"]
+    role: Literal["BOSS", "MANAGER", "LEADER", "MEMBER"]
     leader_id: str | None = None
     can_add_accounts: bool = False
     can_delete_accounts: bool = False
@@ -511,7 +511,7 @@ def serialize_account(account: TikTokAccount, machine: Machine, owner: User) -> 
 
 
 def visible_users_query(current: User):
-    if current.role == "BOSS":
+    if current.role in {"BOSS", "MANAGER"}:
         return select(User).order_by(User.role, User.full_name)
     if current.role == "LEADER":
         return select(User).where(
@@ -525,14 +525,31 @@ def visible_owner_ids(db: Session, current: User) -> list[uuid.UUID]:
     return list(db.scalars(visible_users_query(current).with_only_columns(User.id)))
 
 
-def ensure_can_manage_user(actor: User, target: User | None = None, creating_role: str | None = None) -> None:
+def ensure_can_manage_user(
+    actor: User,
+    target: User | None = None,
+    creating_role: str | None = None,
+) -> None:
     role = creating_role or (target.role if target else None)
-    if actor.role != "BOSS":
-        raise HTTPException(status_code=403, detail="Chỉ BOSS được quản lý nhân sự")
-    if role == "BOSS" and not actor.is_system_owner:
-        raise HTTPException(status_code=403, detail="Chỉ BOSS chính được quản lý tài khoản BOSS")
+
+    if actor.role not in {"BOSS", "MANAGER"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Bạn không có quyền quản lý nhân sự",
+        )
+
+    # Chỉ BOSS chính được quản lý BOSS hoặc MANAGER.
+    if role in {"BOSS", "MANAGER"} and not actor.is_system_owner:
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ BOSS chính được quản lý BOSS hoặc MANAGER",
+        )
+
     if target is not None and target.is_system_owner and target.id != actor.id:
-        raise HTTPException(status_code=403, detail="Không được thay đổi BOSS chính")
+        raise HTTPException(
+            status_code=403,
+            detail="Không được thay đổi BOSS chính",
+        )
 
 
 def serialize_session(db: Session, row: UserSession, current_session_id: uuid.UUID) -> dict[str, Any]:
@@ -562,7 +579,7 @@ def serialize_session(db: Session, row: UserSession, current_session_id: uuid.UU
 def active_boss_count(db: Session) -> int:
     return int(
         db.scalar(
-            select(func.count(User.id)).where(User.role == "BOSS", User.is_active.is_(True))
+            select(func.count(User.id)).where(User.role.in_(("BOSS", "MANAGER")), User.is_active.is_(True))
         )
         or 0
     )
@@ -726,9 +743,9 @@ async def create_user(
         full_name=payload.full_name.strip(),
         role=payload.role,
         leader_id=leader_id,
-        can_add_accounts=True if payload.role == "BOSS" else payload.can_add_accounts,
-        can_delete_accounts=True if payload.role == "BOSS" else payload.can_delete_accounts,
-        can_run_checks=True if payload.role == "BOSS" else payload.can_run_checks,
+        can_add_accounts=True if payload.role in {"BOSS", "MANAGER"} else payload.can_add_accounts,
+        can_delete_accounts=True if payload.role in {"BOSS", "MANAGER"} else payload.can_delete_accounts,
+        can_run_checks=True if payload.role in {"BOSS", "MANAGER"} else payload.can_run_checks,
         show_in_org_chart=payload.show_in_org_chart,
         is_system_owner=False,
     )
@@ -837,6 +854,7 @@ async def reset_password(
 @app.post("/api/users/{user_id}/avatar")
 async def upload_user_avatar(
     user_id: str,
+    request: Request,
     avatar: UploadFile = File(...),
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
@@ -851,7 +869,16 @@ async def upload_user_avatar(
 
     # Mỗi người chỉ được đổi ảnh của mình.
     # BOSS được đổi ảnh cho tất cả mọi người.
-    if current.role != "BOSS" and current.id != target.id:
+    if current.role not in {"BOSS", "MANAGER"} and current.id != target.id:
+        if (
+            current.role == "MANAGER"
+            and target.role == "BOSS"
+            and current.id != target.id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="QUẢN LÝ không được thay đổi tài khoản BOSS",
+            )
         raise HTTPException(
             status_code=403,
             detail="Bạn không được đổi ảnh của người khác"
@@ -1191,8 +1218,11 @@ async def transfer_account(
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
 ):
-    if current.role != "BOSS":
-        raise HTTPException(status_code=403, detail="Chỉ BOSS được chuyển kênh")
+    if current.role not in {"BOSS", "MANAGER"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ BOSS hoặc QUẢN LÝ được chuyển kênh",
+        )
     account = db.get(TikTokAccount, parse_uuid(account_id, "Account ID"))
     target_machine = db.get(Machine, parse_uuid(payload.machine_id, "Machine ID"))
     if account is None or target_machine is None:
@@ -1266,7 +1296,7 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
 def global_search(
     q: str,
     db: Session = Depends(get_db),
-    _boss: User = Depends(require_roles("BOSS")),
+    _boss: User = Depends(require_roles("BOSS", "MANAGER")),
 ):
     clean = TikTokChecker.clean_username(q) or q.strip().lstrip("@").lower()
     rows = db.execute(
@@ -1313,18 +1343,18 @@ async def start_check(
             .join(TikTokAccount, TikTokAccount.machine_id == Machine.id)
             .where(TikTokAccount.id.in_(selected_ids))
         ))
-        if len(owner_ids) != 1 and current.role != "BOSS":
+        if len(owner_ids) != 1 and current.role not in {"BOSS", "MANAGER"}:
             raise HTTPException(status_code=403, detail="Mỗi lần chỉ được check kênh của một người")
         for owner_id in owner_ids:
             ensure_can_start_manual_check(db, current, owner_id)
     elif payload.scope_type == "LEADER_GROUP":
-        if current.role != "BOSS" or target_id is None:
+        if current.role not in {"BOSS", "MANAGER"} or target_id is None:
             raise HTTPException(status_code=403, detail="Chỉ BOSS được check cả nhóm Leader")
         target = db.get(User, target_id)
         if target is None or target.role != "LEADER":
             raise HTTPException(status_code=422, detail="Leader không hợp lệ")
     elif payload.scope_type == "COMPANY":
-        if current.role != "BOSS":
+        if current.role not in {"BOSS", "MANAGER"}:
             raise HTTPException(status_code=403, detail="Chỉ BOSS được check toàn công ty")
 
     try:
@@ -1335,7 +1365,7 @@ async def start_check(
             scope_type=payload.scope_type,
             target_user_id=target_id,
             selected_ids=selected_ids,
-            priority=0 if current.role == "BOSS" else 10,
+            priority=0 if current.role in {"BOSS", "MANAGER"} else 10,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1362,7 +1392,7 @@ def current_check_run(
         CheckRun.status.in_(("QUEUED", "RUNNING")),
         CheckRun.requested_session_id == current_session.id,
     )
-    if current.role == "BOSS":
+    if current.role in {"BOSS", "MANAGER"}:
         query = select(CheckRun).where(
             CheckRun.status.in_(("QUEUED", "RUNNING")),
             or_(CheckRun.requested_session_id == current_session.id, CheckRun.trigger_type == "SCHEDULED"),
@@ -1426,7 +1456,7 @@ async def update_settings(
     payload: SettingsUpdateRequest,
     request: Request,
     db: Session = Depends(get_db),
-    boss: User = Depends(require_roles("BOSS")),
+    boss: User = Depends(require_roles("BOSS", "MANAGER")),
     _csrf: User = Depends(csrf_protect),
 ):
     row = db.get(AppSettings, 1)
@@ -1479,7 +1509,7 @@ def list_sessions(
     current_session: UserSession = Depends(get_current_session),
 ):
     query = select(UserSession)
-    if current.role != "BOSS":
+    if current.role not in {"BOSS", "MANAGER"}:
         query = query.where(UserSession.user_id == current.id)
     rows = db.scalars(query.order_by(UserSession.created_at.desc()).limit(100))
     return {"sessions": [serialize_session(db, row, current_session.id) for row in rows]}
@@ -1497,7 +1527,17 @@ async def revoke_session(
     if target is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy phiên đăng nhập")
     target_user = db.get(User, target.user_id)
-    if target.user_id != current.id and current.role != "BOSS":
+    if (
+        target_user
+        and target_user.role == "BOSS"
+        and target.user_id != current.id
+        and not current.is_system_owner
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Không được thu hồi phiên đăng nhập của BOSS",
+        )
+    if target.user_id != current.id and current.role not in {"BOSS", "MANAGER"}:
         raise HTTPException(status_code=403, detail="Không được đăng xuất phiên của người khác")
     if target_user and target_user.is_system_owner and target.user_id != current.id:
         raise HTTPException(status_code=403, detail="Không được đăng xuất BOSS chính")
@@ -1519,7 +1559,7 @@ async def revoke_session(
 def list_audit_logs(
     limit: int = 100,
     db: Session = Depends(get_db),
-    _boss: User = Depends(require_roles("BOSS")),
+    _boss: User = Depends(require_roles("BOSS", "MANAGER")),
 ):
     safe_limit = max(1, min(limit, 200))
     rows = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(safe_limit))

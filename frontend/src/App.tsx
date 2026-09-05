@@ -38,11 +38,13 @@ function AuthenticatedApp() {
   useEffect(() => { if (runs?.runs[0]) setCurrentRun(runs.runs[0]); }, [runs, setCurrentRun]);
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
+  const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
+
   const nav = [
     { to: "/", label: "Tổng quan", icon: LayoutDashboard, end: true },
     { to: "/accounts", label: "Kênh TikTok", icon: Activity },
     { to: "/organization", label: "Tổ chức nhân sự", icon: Network },
-    ...(user?.role === "BOSS" ? [
+    ...(isCompanyAdmin ? [
       { to: "/people", label: "Quản lý nhân sự", icon: Users },
       { to: "/audit", label: "Nhật ký", icon: ClipboardList },
       { to: "/settings", label: "Cấu hình", icon: Settings2 },
@@ -64,9 +66,9 @@ function AuthenticatedApp() {
     </aside>
     {mobileOpen && <button className="mobile-overlay" onClick={() => setMobileOpen(false)} />}
     <div className="main-column">
-      <header className="topbar"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={21} /></button><div className="topbar-context"><Building2 size={18} /><span>Không gian công ty</span></div><div className="topbar-actions">{user?.role === "BOSS" && <button className="topbar-button" onClick={() => setSearchOpen(true)}><Search size={17} /><span>Tìm toàn công ty</span></button>}<button className="topbar-button" onClick={toggleVoice}>{voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}<span>{voiceEnabled ? "Đang bật loa" : "Bật loa"}</span></button><label className="profile-button" title="Bấm để đổi ảnh"><Avatar name={user!.full_name} url={user!.avatar_url} size="sm" /><span><strong>{user!.full_name}</strong><small>{user!.role}{user!.is_system_owner ? " · Chính" : ""}</small></span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => void uploadOwnAvatar(e.target.files?.[0])} /></label><button className="icon-button" title="Đổi mật khẩu" onClick={() => setPasswordOpen(true)}><KeyRound size={18} /></button><button className="icon-button logout-icon" title="Đăng xuất" onClick={() => void logout()}><LogOut size={18} /></button></div></header>
+      <header className="topbar"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={21} /></button><div className="topbar-context"><Building2 size={18} /><span>Không gian công ty</span></div><div className="topbar-actions">{isCompanyAdmin && <button className="topbar-button" onClick={() => setSearchOpen(true)}><Search size={17} /><span>Tìm toàn công ty</span></button>}<button className="topbar-button" onClick={toggleVoice}>{voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}<span>{voiceEnabled ? "Đang bật loa" : "Bật loa"}</span></button><label className="profile-button" title="Bấm để đổi ảnh"><Avatar name={user!.full_name} url={user!.avatar_url} size="sm" /><span><strong>{user!.full_name}</strong><small>{user!.role}{user!.is_system_owner ? " · Chính" : ""}</small></span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => void uploadOwnAvatar(e.target.files?.[0])} /></label><button className="icon-button" title="Đổi mật khẩu" onClick={() => setPasswordOpen(true)}><KeyRound size={18} /></button><button className="icon-button logout-icon" title="Đăng xuất" onClick={() => void logout()}><LogOut size={18} /></button></div></header>
       <JobPanel />
-      <main className="content"><Routes><Route path="/" element={<DashboardPage />} /><Route path="/accounts" element={<AccountsPage />} /><Route path="/organization" element={<OrganizationPage />} /><Route path="/sessions" element={<SessionsPage />} />{user?.role === "BOSS" && <><Route path="/people" element={<PeoplePage />} /><Route path="/audit" element={<AuditPage />} /><Route path="/settings" element={<SettingsPage />} /></>}<Route path="*" element={<Navigate to="/" replace />} /></Routes></main>
+      <main className="content"><Routes><Route path="/" element={<DashboardPage />} /><Route path="/accounts" element={<AccountsPage />} /><Route path="/organization" element={<OrganizationPage />} /><Route path="/sessions" element={<SessionsPage />} />{isCompanyAdmin && <><Route path="/people" element={<PeoplePage />} /><Route path="/audit" element={<AuditPage />} /><Route path="/settings" element={<SettingsPage />} /></>}<Route path="*" element={<Navigate to="/" replace />} /></Routes></main>
     </div>
     {searchOpen && <SearchDialog onClose={() => setSearchOpen(false)} onOpenOwner={(id) => { setSearchOpen(false); navigate(`/accounts?owner=${id}`); }} />}
     {passwordOpen && <PasswordDialog onClose={() => setPasswordOpen(false)} />}

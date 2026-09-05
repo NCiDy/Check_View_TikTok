@@ -25,6 +25,7 @@ export function AccountsPage() {
   const ownerId = params.get("owner") || user?.id || "";
   const status = params.get("status") || "ALL";
 
+  const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: () => api<{ users: User[] }>("/api/users") });
   const machinesQuery = useQuery({
     queryKey: ["machines", ownerId],
@@ -49,7 +50,7 @@ export function AccountsPage() {
   const canAdd = Boolean(
     owner &&
     (
-      user?.role === "BOSS" ||
+      isCompanyAdmin ||
       ((isOwnAccount || isManagedMember) && user?.can_add_accounts)
     )
   );
@@ -57,11 +58,14 @@ export function AccountsPage() {
   const canDelete = Boolean(
     owner &&
     (
-      user?.role === "BOSS" ||
+      isCompanyAdmin ||
       ((isOwnAccount || isManagedMember) && user?.can_delete_accounts)
     )
   );
-  const canCheck = Boolean(user?.role === "BOSS" || user?.can_run_checks);
+
+  const canCheck = Boolean(
+    isCompanyAdmin || user?.can_run_checks
+  );
 
   const filtered = useMemo(() => (accountsQuery.data?.accounts || []).filter((account) => {
     if (machineId !== "ALL" && account.machine_id !== machineId) return false;
@@ -100,14 +104,19 @@ export function AccountsPage() {
 
   const groups = useMemo(() => {
     const all = usersQuery.data?.users || [];
+
     return {
       bosses: all.filter((item) => item.role === "BOSS"),
+      managers: all.filter((item) => item.role === "MANAGER"),
       leaders: all.filter((item) => item.role === "LEADER"),
       members: all.filter((item) => item.role === "MEMBER"),
     };
   }, [usersQuery.data]);
 
     const activeBosses = groups.bosses.filter((item) => item.is_active);
+    const activeManagers = groups.managers.filter(
+      (item) => item.is_active
+    );
 
   const teamGroups = groups.leaders
     .filter((leader) => leader.is_active)
@@ -159,11 +168,20 @@ export function AccountsPage() {
     <div className="accounts-layout">
       <aside className="people-rail panel">
         <div className="rail-heading"><div><p className="eyebrow">PHẠM VI</p><h2>Nhân sự</h2></div></div>
-        {user?.role === "BOSS" && <button className={`person-row ${ownerId === "ALL" ? "active" : ""}`} onClick={() => selectOwner("ALL")}><span className="avatar avatar-sm">CT</span><span><strong>Toàn công ty</strong><small>Tất cả kênh</small></span></button>}
+        {isCompanyAdmin && <button className={`person-row ${ownerId === "ALL" ? "active" : ""}`} onClick={() => selectOwner("ALL")}><span className="avatar avatar-sm">CT</span><span><strong>Toàn công ty</strong><small>Tất cả kênh</small></span></button>}
                 <div className="company-people">
           {activeBosses.length > 0 && (
             <div className="boss-section">
               {activeBosses.map((boss) => renderPerson(boss))}
+            </div>
+          )}
+          {activeManagers.length > 0 && (
+            <div className="manager-section">
+              <div className="scope-team-label">Quản lý</div>
+
+              {activeManagers.map((manager) =>
+                renderPerson(manager, "team-manager")
+              )}
             </div>
           )}
 

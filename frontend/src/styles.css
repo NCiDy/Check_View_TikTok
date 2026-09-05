@@ -348,6 +348,25 @@ textarea { resize: vertical; line-height: 1.55; }
   }
 }
 
+.org-manager-level {
+  padding-bottom: 45px;
+}
+
+.org-manager-level::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  height: 36px;
+  background: #34516d;
+}
+
+.role-manager {
+  color: #c897ff;
+  background: rgba(168, 105, 255, 0.12);
+}
+
 .job-panel { position: sticky; z-index: 19; top: 73px; margin: 10px clamp(18px, 3vw, 42px) 0; padding: 13px 16px; background: rgba(13,31,49,.96); border: 1px solid #285270; border-radius: 13px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
 .job-topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.job-topline > div { display: flex; align-items: center; gap: 10px; font-size: .76rem; }
 .progress-track { height: 5px; margin: 10px 0 8px; background: #07121f; border-radius: 99px; overflow: hidden; }.progress-track span { display: block; height: 100%; background: linear-gradient(90deg, #25d3ef, #4c9eff); transition: width .25s ease; }
@@ -404,6 +423,6 @@ textarea { resize: vertical; line-height: 1.55; }
   .detail-grid { grid-template-columns: repeat(2,1fr); }
   .session-card { grid-template-columns: 40px 1fr; }.session-action { grid-column: 2; justify-items: start; }
   .settings-footer { align-items: stretch; flex-direction: column; }
-  .org-branches { grid-template-columns: 1fr; border-top: 0; }.branch-line, .org-boss-level::after { display: none; }
+  .org-branches { grid-template-columns: 1fr; border-top: 0; }.branch-line, .org-boss-level::after, .org-manager-level::after { display: none;}
   .job-meta { gap: 8px; flex-wrap: wrap; }.job-panel { top: 73px; }
 }

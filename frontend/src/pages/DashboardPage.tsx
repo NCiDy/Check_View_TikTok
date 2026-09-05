@@ -11,6 +11,7 @@ export function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const check = useStartCheck();
+  const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
   const { data, isLoading } = useQuery({
     queryKey: ["dashboard"],
     queryFn: () => api<Dashboard>("/api/dashboard"),
@@ -24,13 +25,13 @@ export function DashboardPage() {
     { label: "Lỗi mới", value: data?.new_problem, icon: Radio, tone: "amber", filter: "ERROR" },
   ];
 
-  const title = user?.role === "BOSS" ? "Toàn công ty" : user?.role === "LEADER" ? "Nhóm của bạn" : "Kênh của bạn";
+  const title = isCompanyAdmin ? "Toàn công ty" : user?.role === "LEADER" ? "Nhóm của bạn" : "Kênh của bạn";
 
   return (
     <div className="page-stack">
       <div className="page-heading">
         <div><p className="eyebrow">TỔNG QUAN</p><h1>{title}</h1><p>Cập nhật trực tiếp từ Supabase và checker TikTok.</p></div>
-        {user?.role === "BOSS" && (
+        {isCompanyAdmin && (
           <button className="button primary" disabled={check.isPending} onClick={() => {
             if (window.confirm("Bắt đầu check toàn bộ kênh trong công ty?")) check.mutate({ scope_type: "COMPANY" });
           }}><Radio size={17} /> Check toàn công ty</button>

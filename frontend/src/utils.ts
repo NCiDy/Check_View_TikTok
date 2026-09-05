@@ -18,7 +18,10 @@ export function initials(name: string): string {
 }
 
 export function roleLabel(role: string): string {
-  return role === "BOSS" ? "BOSS" : role === "LEADER" ? "LEADER" : "MEMBER";
+  if (role === "BOSS") return "BOSS";
+  if (role === "MANAGER") return "QUẢN LÝ";
+  if (role === "LEADER") return "LEADER";
+  return "MEMBER";
 }
 
 export function statusLabel(status: string): string {

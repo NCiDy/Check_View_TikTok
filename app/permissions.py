@@ -4,22 +4,45 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Machine, User
+from .models import Department, Machine, User
 
 
-def can_view_user(db: Session, actor: User, target_id: uuid.UUID) -> bool:
+def can_view_user(
+    db: Session,
+    actor: User,
+    target_id: uuid.UUID,
+) -> bool:
     if actor.role in {"BOSS", "MANAGER"} or actor.id == target_id:
         return True
-    if actor.role == "LEADER":
-        return db.scalar(
-            select(User.id).where(
-                User.id == target_id,
-                User.leader_id == actor.id,
-                User.role == "MEMBER",
-                User.is_active.is_(True),
+
+    target = db.get(User, target_id)
+
+    if target is None or not target.is_active:
+        return False
+
+    if actor.role != "LEADER":
+        return False
+
+    if target.role == "MEMBER" and target.leader_id == actor.id:
+        return True
+
+    if not actor.department_id:
+        return False
+
+    if target.department_id != actor.department_id:
+        return False
+
+    if target.role not in {"LEADER", "MEMBER"}:
+        return False
+
+    return bool(
+        db.scalar(
+            select(Department.leader_collaboration_enabled).where(
+                Department.id == actor.department_id,
+                Department.is_active.is_(True),
             )
-        ) is not None
-    return False
+        )
+    )
 
 
 def ensure_can_view_user(db: Session, actor: User, target_id: uuid.UUID) -> None:

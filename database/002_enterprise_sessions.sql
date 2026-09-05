@@ -148,3 +148,21 @@ ALTER TABLE public.user_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 
 COMMIT;
+
+BEGIN;
+
+ALTER TABLE public.users
+DROP CONSTRAINT IF EXISTS users_leader_shape;
+
+ALTER TABLE public.users
+ADD CONSTRAINT users_leader_shape
+CHECK (
+    (role = 'MEMBER' AND leader_id IS NOT NULL)
+    OR
+    (
+        role IN ('BOSS', 'MANAGER', 'LEADER')
+        AND leader_id IS NULL
+    )
+);
+
+COMMIT;

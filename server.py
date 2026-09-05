@@ -9,6 +9,7 @@ import secrets
 import threading
 import time
 import uuid
+from app.models import Department
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -31,7 +32,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image, UnidentifiedImageError
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.middleware.gzip import GZipMiddleware
@@ -41,7 +42,7 @@ from app.config import settings
 from app.audit import write_audit
 from app.database import db_session, get_db, test_database_connection
 from app.job_manager import JobManager
-from app.models import AuditLog, AppSettings, CheckRun, Machine, TikTokAccount, User, UserSession
+from app.models import Department, AuditLog, AppSettings, CheckRun, Machine, TikTokAccount, User, UserSession
 from app.permissions import (
     ensure_can_manage_accounts,
     ensure_can_start_manual_check,
@@ -408,6 +409,9 @@ class SettingsUpdateRequest(BaseModel):
 class SessionRevokeRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=100)
 
+class DepartmentUpdateRequest(BaseModel):
+    leader_collaboration_enabled: bool
+
 
 def serialize_user(db: Session, user: User) -> dict[str, Any]:
     machine_count = db.scalar(select(func.count()).select_from(Machine).where(Machine.owner_id == user.id)) or 0
@@ -434,6 +438,7 @@ def serialize_user(db: Session, user: User) -> dict[str, Any]:
         "is_system_owner": user.is_system_owner,
         "show_in_org_chart": user.show_in_org_chart,
         "leader_id": str(user.leader_id) if user.leader_id else None,
+        "department_id": str(user.department_id) if user.department_id else None,
         "is_active": user.is_active,
         "can_add_accounts": user.can_add_accounts,
         "can_delete_accounts": user.can_delete_accounts,
@@ -513,16 +518,53 @@ def serialize_account(account: TikTokAccount, machine: Machine, owner: User) -> 
 def visible_users_query(current: User):
     if current.role in {"BOSS", "MANAGER"}:
         return select(User).order_by(User.role, User.full_name)
+
     if current.role == "LEADER":
-        return select(User).where(
-            or_(User.id == current.id, User.leader_id == current.id),
-            User.is_active.is_(True),
-        ).order_by(User.role, User.full_name)
+        conditions = [
+            User.id == current.id,
+            User.leader_id == current.id,
+        ]
+
+        if current.department_id:
+            collaboration_enabled = exists(
+                select(Department.id).where(
+                    Department.id == current.department_id,
+                    Department.is_active.is_(True),
+                    Department.leader_collaboration_enabled.is_(True),
+                )
+            )
+
+            conditions.append(
+                and_(
+                    collaboration_enabled,
+                    User.department_id == current.department_id,
+                    User.role.in_(("LEADER", "MEMBER")),
+                )
+            )
+
+        return (
+            select(User)
+            .where(
+                or_(*conditions),
+                User.is_active.is_(True),
+            )
+            .order_by(User.role, User.full_name)
+        )
+
     return select(User).where(User.id == current.id)
 
 
-def visible_owner_ids(db: Session, current: User) -> list[uuid.UUID]:
-    return list(db.scalars(visible_users_query(current).with_only_columns(User.id)))
+def visible_owner_ids(
+    db: Session,
+    current: User,
+) -> list[uuid.UUID]:
+    query = (
+        visible_users_query(current)
+        .with_only_columns(User.id)
+        .order_by(None)
+    )
+
+    return list(db.scalars(query))
 
 
 def ensure_can_manage_user(
@@ -1291,6 +1333,64 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
         "recent_changes": recent_changes[:30],
     }
 
+@app.patch("/api/departments/{department_id}")
+async def update_department(
+    department_id: str,
+    payload: DepartmentUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(csrf_protect),
+):
+    if current.role not in {"BOSS", "MANAGER"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Bạn không có quyền cấu hình phòng",
+        )
+
+    department = db.get(
+        Department,
+        parse_uuid(department_id, "Department ID"),
+    )
+
+    if department is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy phòng",
+        )
+
+    department.leader_collaboration_enabled = (
+        payload.leader_collaboration_enabled
+    )
+    department.updated_at = utcnow()
+
+    write_audit(
+        db,
+        request,
+        current,
+        "DEPARTMENT_UPDATED",
+        "DEPARTMENT",
+        department.id,
+        {
+            "leader_collaboration_enabled":
+                department.leader_collaboration_enabled
+        },
+    )
+
+    db.commit()
+
+    await ws_manager.broadcast(
+        "directory_updated",
+        {"department_id": str(department.id)},
+    )
+
+    return {
+        "department": {
+            "id": str(department.id),
+            "name": department.name,
+            "leader_collaboration_enabled":
+                department.leader_collaboration_enabled,
+        }
+    }
 
 @app.get("/api/search")
 def global_search(
@@ -1485,21 +1585,61 @@ async def update_settings(
 
 
 @app.get("/api/organization")
-def organization(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+def organization(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
     if current.role == "MEMBER" and current.leader_id:
         users = list(
             db.scalars(
-                select(User).where(User.id.in_((current.id, current.leader_id)))
+                select(User).where(
+                    User.id.in_((current.id, current.leader_id))
+                )
             )
         )
     else:
         users = list(db.scalars(visible_users_query(current)))
+
     nodes = [
         serialize_user(db, user)
         for user in users
         if user.show_in_org_chart and user.is_active
     ]
-    return {"users": nodes}
+
+    visible_department_ids = {
+        user.department_id
+        for user in users
+        if user.department_id is not None
+    }
+
+    departments = []
+
+    if visible_department_ids:
+        department_rows = list(
+            db.scalars(
+                select(Department)
+                .where(
+                    Department.id.in_(visible_department_ids),
+                    Department.is_active.is_(True),
+                )
+                .order_by(Department.name)
+            )
+        )
+
+        departments = [
+            {
+                "id": str(item.id),
+                "name": item.name,
+                "leader_collaboration_enabled":
+                    item.leader_collaboration_enabled,
+            }
+            for item in department_rows
+        ]
+
+    return {
+        "users": nodes,
+        "departments": departments,
+    }
 
 
 @app.get("/api/sessions")

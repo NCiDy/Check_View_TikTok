@@ -173,8 +173,8 @@ small { display: block; color: var(--muted); font-size: .73rem; line-height: 1.4
 
 .scope-team-label {
   padding: 3px 10px 5px;
-  color: #7f94ac;
-  font-size: 0.65rem;
+  color: #58e550;
+  font-size: 0.85rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;

@@ -253,7 +253,7 @@ export function AccountsPage() {
                 >
                   {department.leader_collaboration_enabled
                     ? "Hợp tác"
-                    : "Riêng nhóm"}
+                    : "Riêng"}
                 </small>
               </div>
 

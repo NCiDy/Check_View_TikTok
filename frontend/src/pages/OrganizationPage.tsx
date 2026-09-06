@@ -8,7 +8,11 @@ import {
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { Avatar } from "../components/Avatar";
+import { notify } from "../api";
+import { useAuth } from "../AuthContext";
 import type { Department, User } from "../types";
+
+
 
 interface OrganizationResponse {
   users: User[];
@@ -93,7 +97,7 @@ function LeaderBranch({
 
 export function OrganizationPage() {
   const navigate = useNavigate();
-
+  const { user: current } = useAuth();
   const { data, isLoading } = useQuery({
     queryKey: ["organization"],
     queryFn: () =>
@@ -108,7 +112,52 @@ export function OrganizationPage() {
   const leaders = people.filter((item) => item.role === "LEADER");
   const members = people.filter((item) => item.role === "MEMBER");
 
+  function canOpenPerson(person: User) {
+    if (!current) return false;
+
+    if (current.role === "BOSS" || current.role === "MANAGER") {
+      return true;
+    }
+
+    if (current.id === person.id) {
+      return true;
+    }
+
+    if (
+      current.role === "LEADER" &&
+      person.role === "MEMBER" &&
+      person.leader_id === current.id
+    ) {
+      return true;
+    }
+
+    if (
+      current.role === "LEADER" &&
+      current.department_id &&
+      current.department_id === person.department_id
+    ) {
+      const department = departments.find(
+        (item) => item.id === current.department_id
+      );
+
+      return Boolean(
+        department?.leader_collaboration_enabled &&
+        ["LEADER", "MEMBER"].includes(person.role)
+      );
+    }
+
+    return false;
+  }
+
   function openPerson(person: User) {
+    if (!canOpenPerson(person)) {
+      notify(
+        "Bạn có thể xem sơ đồ nhưng không có quyền xem kênh của người này",
+        "info"
+      );
+      return;
+    }
+
     navigate(`/accounts?owner=${person.id}`);
   }
 

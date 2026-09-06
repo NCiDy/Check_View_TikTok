@@ -1,6 +1,15 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, Eye, Plus, Search, Smartphone, Trash2 } from "lucide-react";
+import {
+  ArrowRightLeft,
+  Crown,
+  Eye,
+  Plus,
+  Search,
+  Sparkles,
+  Smartphone,
+  Trash2,
+} from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { api, notify } from "../api";
 import { useAuth } from "../AuthContext";
@@ -16,6 +25,62 @@ import type {
 import { formatNumber, formatTime, statusLabel } from "../utils";
 
 type Dialog = "machine" | "accounts" | "detail" | "transfer" | null;
+
+function FollowerValue({
+  followers,
+  delta,
+}: {
+  followers?: number | null;
+  delta?: number | null;
+}) {
+  const value = followers || 0;
+
+  const tier =
+    value >= 10000
+      ? "followers-tier-10000"
+      : value >= 5000
+        ? "followers-tier-5000"
+        : value >= 2000
+          ? "followers-tier-2000"
+          : "";
+
+  return (
+    <div className={`follower-highlight ${tier}`}>
+      {value >= 10000 && (
+        <span
+          className="follower-tier-icon"
+          title="Đạt 10.000 followers"
+        >
+          <Crown size={15} />
+        </span>
+      )}
+
+      {value >= 5000 && value < 10000 && (
+        <span
+          className="follower-tier-icon"
+          title="Đạt 5.000 followers"
+        >
+          <Sparkles size={14} />
+        </span>
+      )}
+
+      <strong>{formatNumber(followers)}</strong>
+
+      {delta != null && delta !== 0 && (
+        <small
+          className={
+            delta > 0
+              ? "delta-positive"
+              : "delta-negative"
+          }
+        >
+          {delta > 0 ? "+" : ""}
+          {formatNumber(delta)}
+        </small>
+      )}
+    </div>
+  );
+}
 
 export function AccountsPage() {
   const { user } = useAuth();
@@ -347,7 +412,12 @@ export function AccountsPage() {
                   <td><strong>M#{account.machine_number} – K{account.slot_number}</strong><small>{account.owner_name}</small></td>
                   <td><div className="account-cell"><Avatar name={account.nickname || account.username} url={account.avatar_url} size="sm" /><span><strong>@{account.username}</strong><small>{account.nickname || "Chưa có nickname"}</small></span></div></td>
                   <td><span className={`status-badge status-${account.status.toLowerCase()}`}>{account.status === "LIVE" && account.is_private ? "LIVE · RIÊNG TƯ" : statusLabel(account.status)}</span>{account.last_error_message && <small title={account.last_error_message}>{account.last_error_code}</small>}</td>
-                  <td><strong>{formatNumber(account.followers)}</strong>{account.follower_delta != null && account.follower_delta !== 0 && <small className={account.follower_delta > 0 ? "delta-positive" : "delta-negative"}>{account.follower_delta > 0 ? "+" : ""}{formatNumber(account.follower_delta)}</small>}</td>
+                  <td>
+                    <FollowerValue
+                      followers={account.followers}
+                      delta={account.follower_delta}
+                    />
+                  </td>
                   <td>{formatNumber(account.total_sample_views)}</td>
                   <td>{formatTime(account.last_checked_at)}</td>
                   <td><button className="icon-button" title="Chi tiết" onClick={() => { setDetail(account); setDialog("detail"); }}><Eye size={17} /></button></td>

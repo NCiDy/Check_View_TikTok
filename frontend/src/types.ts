@@ -8,6 +8,7 @@ export interface User {
   role: Role;
   leader_id?: string | null;
   is_system_owner: boolean;
+  is_technical_account: boolean;
   show_in_org_chart: boolean;
   is_active: boolean;
   can_add_accounts: boolean;

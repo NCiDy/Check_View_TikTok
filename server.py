@@ -436,6 +436,7 @@ def serialize_user(db: Session, user: User) -> dict[str, Any]:
         "avatar_url": user.avatar_url,
         "role": user.role,
         "is_system_owner": user.is_system_owner,
+        "is_technical_account": user.is_technical_account,
         "show_in_org_chart": user.show_in_org_chart,
         "leader_id": str(user.leader_id) if user.leader_id else None,
         "department_id": str(user.department_id) if user.department_id else None,
@@ -750,8 +751,24 @@ async def change_password(
 
 
 @app.get("/api/users")
-def list_users(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
-    return {"users": [serialize_user(db, user) for user in db.scalars(visible_users_query(current))]}
+def list_users(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    query = (
+        visible_users_query(current)
+        .where(User.is_technical_account.is_(False))
+    )
+
+    users = list(db.scalars(query))
+
+    return {
+        "users": [
+            serialize_user(db, user)
+            for user in users
+            if not user.is_technical_account
+        ]
+    }
 
 
 @app.post("/api/users")
@@ -1589,24 +1606,19 @@ def organization(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    if current.role == "MEMBER" and current.leader_id:
-        users = list(
-            db.scalars(
-                select(User).where(
-                    User.id.in_((current.id, current.leader_id))
-                )
+    users = list(
+        db.scalars(
+            select(User)
+            .where(
+                User.is_active.is_(True),
+                User.show_in_org_chart.is_(True),
+                User.is_technical_account.is_(False),
             )
+            .order_by(User.role, User.full_name)
         )
-    else:
-        users = list(db.scalars(visible_users_query(current)))
+    )
 
-    nodes = [
-        serialize_user(db, user)
-        for user in users
-        if user.show_in_org_chart and user.is_active
-    ]
-
-    visible_department_ids = {
+    department_ids = {
         user.department_id
         for user in users
         if user.department_id is not None
@@ -1614,12 +1626,12 @@ def organization(
 
     departments = []
 
-    if visible_department_ids:
-        department_rows = list(
+    if department_ids:
+        rows = list(
             db.scalars(
                 select(Department)
                 .where(
-                    Department.id.in_(visible_department_ids),
+                    Department.id.in_(department_ids),
                     Department.is_active.is_(True),
                 )
                 .order_by(Department.name)
@@ -1630,14 +1642,21 @@ def organization(
             {
                 "id": str(item.id),
                 "name": item.name,
+
+                # Không công khai cấu hình quyền cho Member.
                 "leader_collaboration_enabled":
-                    item.leader_collaboration_enabled,
+                    item.leader_collaboration_enabled
+                    if current.role in {"BOSS", "MANAGER", "LEADER"}
+                    else False,
             }
-            for item in department_rows
+            for item in rows
         ]
 
     return {
-        "users": nodes,
+        "users": [
+            serialize_user(db, user)
+            for user in users
+        ],
         "departments": departments,
     }
 

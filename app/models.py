@@ -68,6 +68,11 @@ class User(Base):
     role: Mapped[str] = mapped_column(Text, nullable=False)
     is_system_owner: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     show_in_org_chart: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_technical_account: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
     leader_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
     )

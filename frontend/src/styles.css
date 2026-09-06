@@ -796,3 +796,91 @@ textarea { resize: vertical; line-height: 1.55; }
   color: #71869a;
   font-size: 0.68rem;
 }
+
+.follower-highlight {
+  position: relative;
+  box-sizing: border-box;
+  width: 94px;
+  min-height: 43px;
+  padding: 7px 28px 7px 10px;
+  display: grid;
+  align-content: center;
+  gap: 1px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.follower-highlight strong {
+  font-size: 0.8rem;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.follower-highlight small {
+  font-size: 0.64rem;
+  line-height: 1.1;
+}
+
+.follower-tier-icon {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  pointer-events: auto;
+}
+
+/* Từ 2.000 */
+.followers-tier-2000 {
+  color: #67e8f9;
+  border-color: rgba(34, 211, 238, 0.2);
+  background: rgba(34, 211, 238, 0.055);
+}
+
+/* Từ 5.000 */
+.followers-tier-5000 {
+  color: #c4b5fd;
+  border-color: rgba(139, 92, 246, 0.4);
+  background: linear-gradient(
+    135deg,
+    rgba(124, 58, 237, 0.17),
+    rgba(76, 29, 149, 0.06)
+  );
+  box-shadow: inset 3px 0 0 #8b5cf6;
+}
+
+.followers-tier-5000 .follower-tier-icon {
+  color: #c084fc;
+  filter: drop-shadow(0 0 4px rgba(192, 132, 252, 0.45));
+}
+
+/* Từ 10.000 */
+.followers-tier-10000 {
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.55);
+  background: linear-gradient(
+    135deg,
+    rgba(245, 158, 11, 0.22),
+    rgba(180, 83, 9, 0.07)
+  );
+  box-shadow:
+    inset 3px 0 0 #f59e0b,
+    0 0 13px rgba(245, 158, 11, 0.13);
+}
+
+.followers-tier-10000 strong {
+  font-weight: 900;
+}
+
+.followers-tier-10000 .follower-tier-icon {
+  color: #fbbf24;
+  filter: drop-shadow(0 0 5px rgba(251, 191, 36, 0.55));
+}
+
+tbody tr:hover .follower-highlight {
+  border-color: rgba(148, 163, 184, 0.45);
+}
+
+.follower-tier-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}

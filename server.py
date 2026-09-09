@@ -449,7 +449,7 @@ def serialize_user(db: Session, user: User) -> dict[str, Any]:
         "last_login_at": iso(user.last_login_at),
         "last_seen_at": iso(active_session.last_seen_at) if active_session else None,
         "is_online": bool(
-            active_session and active_session.last_seen_at >= utcnow() - timedelta(minutes=2)
+            active_session and active_session.last_seen_at >= utcnow() - timedelta(minutes=5)
         ),
         "updated_at": iso(user.updated_at),
         "created_at": iso(user.created_at),
@@ -1744,13 +1744,26 @@ async def websocket_endpoint(websocket: WebSocket):
     session = websocket.scope.get("session", {})
     user_id = session.get("user_id")
     session_id = session.get("session_id")
+
     if not user_id or not session_id:
         await websocket.close(code=4401)
         return
+
+    try:
+        parsed_user_id = uuid.UUID(user_id)
+        parsed_session_id = uuid.UUID(session_id)
+    except (ValueError, TypeError):
+        await websocket.close(code=4401)
+        return
+
     try:
         with db_session() as db:
-            user = db.get(User, uuid.UUID(user_id))
-            active_session = db.get(UserSession, uuid.UUID(session_id))
+            user = db.get(User, parsed_user_id)
+            active_session = db.get(
+                UserSession,
+                parsed_session_id,
+            )
+
             if (
                 user is None
                 or not user.is_active
@@ -1761,35 +1774,71 @@ async def websocket_endpoint(websocket: WebSocket):
             ):
                 await websocket.close(code=4401)
                 return
+
     except Exception:
         await websocket.close(code=1011)
         return
+
     await ws_manager.connect(session_id, user_id, websocket)
+
+    # Chỉ kiểm tra và ghi DB tối đa một lần mỗi 3 phút.
+    last_database_touch = time.monotonic()
+
     try:
-        await websocket.send_text(json.dumps({
-            "type": "connected",
-            "data": {"user_id": user_id, "session_id": session_id},
-        }))
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "connected",
+                    "data": {
+                        "user_id": user_id,
+                        "session_id": session_id,
+                    },
+                }
+            )
+        )
+
         while True:
             message = await websocket.receive_text()
-            if message == "ping":
-                with db_session() as db:
-                    active_session = db.get(UserSession, uuid.UUID(session_id))
-                    if active_session is None or active_session.revoked_at is not None:
-                        await websocket.close(code=4401)
-                        return
-                    active_session.last_seen_at = utcnow()
-                await websocket.send_text('{"type":"pong","data":{}}')
+
+            if message != "ping":
+                continue
+
+            now_monotonic = time.monotonic()
+
+            if now_monotonic - last_database_touch >= 180:
+                try:
+                    with db_session() as db:
+                        active_session = db.get(
+                            UserSession,
+                            parsed_session_id,
+                        )
+
+                        if (
+                            active_session is None
+                            or active_session.user_id != parsed_user_id
+                            or active_session.revoked_at is not None
+                            or active_session.expires_at <= utcnow()
+                        ):
+                            await websocket.close(code=4401)
+                            return
+
+                        active_session.last_seen_at = utcnow()
+
+                    last_database_touch = now_monotonic
+
+                except Exception:
+                    await websocket.close(code=1011)
+                    return
+
+            await websocket.send_text(
+                '{"type":"pong","data":{}}'
+            )
+
     except WebSocketDisconnect:
-        await ws_manager.disconnect(session_id, websocket)
+        pass
+
     finally:
         await ws_manager.disconnect(session_id, websocket)
-
-
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
-if (REACT_DIST_DIR / "assets").exists():
-    app.mount("/assets", StaticFiles(directory=str(REACT_DIST_DIR / "assets")), name="react-assets")
 
 
 @app.get("/legacy", response_class=HTMLResponse)

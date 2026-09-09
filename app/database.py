@@ -34,9 +34,19 @@ def configure_database(raw_url: str | None = None) -> Engine:
     if _engine is not None:
         return _engine
 
-    engine_kwargs = {"pool_pre_ping": True, "future": True}
+    engine_kwargs = {
+        "pool_pre_ping": True,
+        "future": True,
+    }
+
     if url.startswith("postgresql"):
-        engine_kwargs.update({"pool_size": 5, "max_overflow": 5, "pool_recycle": 900})
+        engine_kwargs.update({
+            "pool_size": 10,
+            "max_overflow": 20,
+            "pool_timeout": 30,
+            "pool_recycle": 300,
+            "pool_use_lifo": True,
+        })
 
     _engine = create_engine(url, **engine_kwargs)
     _session_factory = sessionmaker(

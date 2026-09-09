@@ -61,6 +61,10 @@ class JobManager:
             max_workers=max(1, min(worker_count, 50)),
             thread_name_prefix="tiktok-check",
         )
+        self.job_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(2, min(worker_count * 2, 20)),
+            thread_name_prefix="tiktok-job",
+        )
         self._registry_lock = threading.Lock()
         self._inflight: dict[uuid.UUID, InflightCheck] = {}
         self._stop_events: dict[uuid.UUID, threading.Event] = {}
@@ -68,7 +72,16 @@ class JobManager:
     def shutdown(self) -> None:
         for event in list(self._stop_events.values()):
             event.set()
-        self.executor.shutdown(wait=False, cancel_futures=False)
+
+        self.job_executor.shutdown(
+            wait=False,
+            cancel_futures=False,
+        )
+
+        self.executor.shutdown(
+            wait=False,
+            cancel_futures=False,
+        )
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
         if self.event_callback:
@@ -154,20 +167,14 @@ class JobManager:
 
         stop_event = threading.Event()
         self._stop_events[run_id] = stop_event
-        thread = threading.Thread(
-            target=self._run_job,
-            args=(
-                run_id,
-                account_ids,
-                trigger_type == "SCHEDULED",
-                requested_by,
-                requested_session_id,
-                stop_event,
-            ),
-            name=f"job-{run_id}",
-            daemon=True,
+        self.job_executor.submit(
+            self._run_job,
+            run_id,
+            account_ids,
+            trigger_type == "SCHEDULED",
+            requested_by,
+            stop_event,
         )
-        thread.start()
         with db_session() as db:
             created = db.get(CheckRun, run_id)
             return self.serialize_run(created) if created else {

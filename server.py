@@ -28,7 +28,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image, UnidentifiedImageError
@@ -306,6 +306,21 @@ app.add_middleware(
     same_site="lax",
     https_only=settings.cookie_secure,
 )
+app.mount(
+    "/static",
+    StaticFiles(directory=str(STATIC_DIR)),
+    name="static",
+)
+
+@app.get("/assets/{asset_path:path}", include_in_schema=False)
+def react_asset(asset_path: str):
+    asset_root = (REACT_DIST_DIR / "assets").resolve()
+    asset_file = (asset_root / asset_path).resolve()
+
+    if asset_root not in asset_file.parents or not asset_file.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy asset")
+
+    return FileResponse(asset_file)
 
 
 @app.middleware("http")

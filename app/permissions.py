@@ -95,7 +95,60 @@ def ensure_can_manage_accounts(
             detail="Bạn không có quyền quản lý máy hoặc kênh của người này",
         )
 
+def can_transfer_account(
+    db: Session,
+    actor: User,
+    source_owner_id: uuid.UUID,
+    target_owner_id: uuid.UUID,
+) -> bool:
+    if actor.role in {"BOSS", "MANAGER"}:
+        return True
 
+    if actor.role == "MEMBER":
+        return (
+            source_owner_id == actor.id
+            and target_owner_id == actor.id
+        )
+
+    if actor.role == "LEADER":
+        for owner_id in {source_owner_id, target_owner_id}:
+            if owner_id == actor.id:
+                continue
+
+            is_direct_member = db.scalar(
+                select(User.id).where(
+                    User.id == owner_id,
+                    User.role == "MEMBER",
+                    User.leader_id == actor.id,
+                    User.is_active.is_(True),
+                )
+            )
+
+            if is_direct_member is None:
+                return False
+
+        return True
+
+    return False
+
+
+def ensure_can_transfer_account(
+    db: Session,
+    actor: User,
+    source_owner_id: uuid.UUID,
+    target_owner_id: uuid.UUID,
+) -> None:
+    if not can_transfer_account(
+        db,
+        actor,
+        source_owner_id,
+        target_owner_id,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Bạn không có quyền chuyển kênh giữa hai người này",
+        )
+    
 def machine_owner(db: Session, machine_id: uuid.UUID) -> uuid.UUID:
     owner_id = db.scalar(select(Machine.owner_id).where(Machine.id == machine_id))
     if owner_id is None:

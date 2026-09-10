@@ -45,6 +45,7 @@ from app.job_manager import JobManager
 from app.models import Department, AuditLog, AppSettings, CheckRun, Machine, TikTokAccount, User, UserSession
 from app.permissions import (
     ensure_can_manage_accounts,
+    ensure_can_transfer_account,
     ensure_can_start_manual_check,
     ensure_can_view_user,
     machine_owner,
@@ -1292,27 +1293,54 @@ async def transfer_account(
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
 ):
-    if current.role not in {"BOSS", "MANAGER"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Chỉ BOSS hoặc QUẢN LÝ được chuyển kênh",
-        )
-    account = db.get(TikTokAccount, parse_uuid(account_id, "Account ID"))
-    target_machine = db.get(Machine, parse_uuid(payload.machine_id, "Machine ID"))
+    account = db.get(
+        TikTokAccount,
+        parse_uuid(account_id, "Account ID"),
+    )
+    target_machine = db.get(
+        Machine,
+        parse_uuid(payload.machine_id, "Machine ID"),
+    )
+
     if account is None or target_machine is None:
-        raise HTTPException(status_code=404, detail="Không tìm thấy kênh hoặc máy đích")
-    occupied = db.scalar(select(TikTokAccount.id).where(
-        TikTokAccount.machine_id == target_machine.id,
-        TikTokAccount.slot_number == payload.slot_number,
-        TikTokAccount.id != account.id,
-    ))
-    if occupied:
-        raise HTTPException(status_code=409, detail="Vị trí kênh trên máy đích đã được sử dụng")
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy kênh hoặc máy đích",
+        )
+
     old_owner_id = machine_owner(db, account.machine_id)
+
+    ensure_can_transfer_account(
+        db,
+        current,
+        old_owner_id,
+        target_machine.owner_id,
+    )
+
+    occupied = db.scalar(
+        select(TikTokAccount.id).where(
+            TikTokAccount.machine_id == target_machine.id,
+            TikTokAccount.slot_number == payload.slot_number,
+            TikTokAccount.id != account.id,
+        )
+    )
+
+    if occupied:
+        raise HTTPException(
+            status_code=409,
+            detail="Vị trí kênh trên máy đích đã được sử dụng",
+        )
+
     account.machine_id = target_machine.id
     account.slot_number = payload.slot_number
+
     write_audit(
-        db, request, current, "ACCOUNT_TRANSFERRED", "TIKTOK_ACCOUNT", account.id,
+        db,
+        request,
+        current,
+        "ACCOUNT_TRANSFERRED",
+        "TIKTOK_ACCOUNT",
+        account.id,
         {
             "username": account.username,
             "from_owner_id": str(old_owner_id),
@@ -1320,8 +1348,14 @@ async def transfer_account(
             "slot_number": payload.slot_number,
         },
     )
+
     db.commit()
-    await ws_manager.broadcast("data_updated", {"source": "account_transfer"})
+
+    await ws_manager.broadcast(
+        "data_updated",
+        {"source": "account_transfer"},
+    )
+
     return {"success": True}
 
 

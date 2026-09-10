@@ -25,6 +25,7 @@ import type {
 import { formatNumber, formatTime, statusLabel } from "../utils";
 
 type Dialog = "machine" | "accounts" | "detail" | "transfer" | null;
+type SortMode = "MACHINE" | "FOLLOWERS" | "DELTA";
 
 function FollowerValue({
   followers,
@@ -92,6 +93,7 @@ export function AccountsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [machineId, setMachineId] = useState("ALL");
   const [search, setSearch] = useState("");
+  const [sortMode, setSortMode] = useState<SortMode>("FOLLOWERS");
   const ownerId = params.get("owner") || user?.id || "";
   const status = params.get("status") || "ALL";
 
@@ -147,14 +149,141 @@ export function AccountsPage() {
   const canCheck = Boolean(
     isCompanyAdmin || user?.can_run_checks
   );
+  const canTransfer = Boolean(
+    user &&
+    detail &&
+    (
+      isCompanyAdmin ||
+      (
+        user.role === "MEMBER" &&
+        detail.owner_id === user.id
+      ) ||
+      (
+        user.role === "LEADER" &&
+        (
+          detail.owner_id === user.id ||
+          usersQuery.data?.users.some(
+            (person) =>
+              person.id === detail.owner_id &&
+              person.role === "MEMBER" &&
+              person.leader_id === user.id
+          )
+        )
+      )
+    )
+  );
 
-  const filtered = useMemo(() => (accountsQuery.data?.accounts || []).filter((account) => {
-    if (machineId !== "ALL" && account.machine_id !== machineId) return false;
-    if (search && !account.username.toLowerCase().includes(search.toLowerCase())) return false;
-    if (status === "ERROR") return ["ERROR", "UNCHECKED"].includes(account.status);
-    if (status !== "ALL" && account.status !== status) return false;
-    return true;
-  }), [accountsQuery.data, machineId, search, status]);
+  const transferUsers = useMemo(() => {
+    const activeUsers = (usersQuery.data?.users || []).filter(
+      (person) => person.is_active
+    );
+
+    if (!user) return [];
+
+    if (user.role === "BOSS" || user.role === "MANAGER") {
+      return activeUsers;
+    }
+
+    if (user.role === "MEMBER") {
+      return activeUsers.filter(
+        (person) => person.id === user.id
+      );
+    }
+
+    if (user.role === "LEADER") {
+      return activeUsers.filter(
+        (person) =>
+          person.id === user.id ||
+          (
+            person.role === "MEMBER" &&
+            person.leader_id === user.id
+          )
+      );
+    }
+
+    return [];
+  }, [user, usersQuery.data]);
+
+  const filtered = useMemo(() => {
+    const accounts = (accountsQuery.data?.accounts || []).filter(
+      (account) => {
+        if (
+          machineId !== "ALL" &&
+          account.machine_id !== machineId
+        ) {
+          return false;
+        }
+
+        if (
+          search &&
+          !account.username
+            .toLowerCase()
+            .includes(search.toLowerCase())
+        ) {
+          return false;
+        }
+
+        if (status === "ERROR") {
+          return ["ERROR", "UNCHECKED"].includes(account.status);
+        }
+
+        if (status !== "ALL" && account.status !== status) {
+          return false;
+        }
+
+        return true;
+      }
+    );
+
+    const machineOrder = (
+      first: TikTokAccount,
+      second: TikTokAccount
+    ) =>
+      first.machine_number - second.machine_number ||
+      first.slot_number - second.slot_number;
+
+    return [...accounts].sort((first, second) => {
+      if (sortMode === "FOLLOWERS") {
+        const firstValue = first.followers;
+        const secondValue = second.followers;
+
+        if (firstValue == null && secondValue == null) {
+          return machineOrder(first, second);
+        }
+        if (firstValue == null) return 1;
+        if (secondValue == null) return -1;
+
+        return (
+          secondValue - firstValue ||
+          machineOrder(first, second)
+        );
+      }
+
+      if (sortMode === "DELTA") {
+        const firstValue = first.follower_delta;
+        const secondValue = second.follower_delta;
+
+        if (firstValue == null && secondValue == null) {
+          return machineOrder(first, second);
+        }
+        if (firstValue == null) return 1;
+        if (secondValue == null) return -1;
+
+        return (
+          secondValue - firstValue ||
+          machineOrder(first, second)
+        );
+      }
+
+      return machineOrder(first, second);
+    });
+  }, [
+    accountsQuery.data,
+    machineId,
+    search,
+    status,
+    sortMode,
+  ]);
 
   function selectOwner(id: string) {
     setParams({ owner: id, status: "ALL" });
@@ -401,6 +530,38 @@ export function AccountsPage() {
         <section className="panel table-panel">
           <div className="table-toolbar">
             <label className="search-box"><Search size={16} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm username…" /></label>
+            <div className="sort-control">
+              <strong className="sort-label">
+                <span>Sắp xếp ĐÂY</span>
+                <small>Zừa lòng e chưa ĐỨCCC 😏</small>
+              </strong>
+
+              <div className="sort-buttons">
+                <button
+                  type="button"
+                  className={sortMode === "MACHINE" ? "active" : ""}
+                  onClick={() => setSortMode("MACHINE")}
+                >
+                  Theo máy
+                </button>
+
+                <button
+                  type="button"
+                  className={sortMode === "FOLLOWERS" ? "active" : ""}
+                  onClick={() => setSortMode("FOLLOWERS")}
+                >
+                  Nhiều follow
+                </button>
+
+                <button
+                  type="button"
+                  className={sortMode === "DELTA" ? "active" : ""}
+                  onClick={() => setSortMode("DELTA")}
+                >
+                  Follow tăng
+                </button>
+              </div>
+            </div>
             <div className="filter-chips">{["ALL", "LIVE", "DIE", "ERROR", "UNCHECKED"].map((item) => <button key={item} className={status === item ? "active" : ""} onClick={() => setParams({ owner: ownerId, status: item })}>{item === "ALL" ? "Tất cả" : statusLabel(item)}</button>)}</div>
           </div>
           <div className="table-scroll">
@@ -552,7 +713,7 @@ export function AccountsPage() {
               Mở trang TikTok
             </a>
 
-            {user?.role === "BOSS" && (
+            {canTransfer && (
               <button
                 className="button secondary"
                 onClick={() => setDialog("transfer")}
@@ -577,7 +738,7 @@ export function AccountsPage() {
           </div>
         </Modal>
       )}
-      {dialog === "transfer" && detail && <TransferDialog account={detail} users={usersQuery.data?.users || []} onClose={() => setDialog("detail")} onSaved={() => { setDialog(null); void refresh(); }} />}
+      {dialog === "transfer" && detail && <TransferDialog account={detail} users={transferUsers} onClose={() => setDialog("detail")} onSaved={() => { setDialog(null); void refresh(); }} />}
     </div>
   );
 }

@@ -884,3 +884,84 @@ tbody tr:hover .follower-highlight {
   align-items: center;
   justify-content: center;
 }
+
+.sort-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.sort-control > strong {
+  color: #9bb0c7;
+  font-size: 1.02rem;
+  font-weight: 700;
+}
+
+.sort-buttons {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  background: #0a1727;
+  border: 1px solid #29435d;
+  border-radius: 11px;
+}
+
+.sort-buttons button {
+  height: 34px;
+  padding: 0 15px;
+  color: #8fa5bc;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 0.18s ease,
+    background 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.sort-buttons button:hover {
+  color: #dff8ff;
+  background: #10283d;
+}
+
+.sort-buttons button.active {
+  color: #05131e;
+  background: var(--cyan);
+  border-color: var(--cyan);
+  box-shadow: 0 0 14px rgba(37, 211, 255, 0.22);
+}
+@media (max-width: 1000px) {
+  .table-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .sort-control {
+    order: 3;
+    width: 100%;
+  }
+}
+.sort-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.sort-label > span {
+  font-size: 1.04rem;
+  font-weight: 800;
+}
+
+.sort-label > small {
+  margin-top: 3px;
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: #849ab1;
+}

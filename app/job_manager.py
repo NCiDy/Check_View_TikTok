@@ -173,6 +173,7 @@ class JobManager:
             account_ids,
             trigger_type == "SCHEDULED",
             requested_by,
+            requested_session_id,
             stop_event,
         )
         with db_session() as db:

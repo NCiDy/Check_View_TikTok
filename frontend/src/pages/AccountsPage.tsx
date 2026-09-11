@@ -532,8 +532,7 @@ export function AccountsPage() {
             <label className="search-box"><Search size={16} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm username…" /></label>
             <div className="sort-control">
               <strong className="sort-label">
-                <span>Sắp xếp ĐÂY</span>
-                <small>Zừa lòng e chưa ĐỨCCC 😏</small>
+                <span>Sắp xếp</span>
               </strong>
 
               <div className="sort-buttons">

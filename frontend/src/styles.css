@@ -184,12 +184,21 @@ small { display: block; color: var(--muted); font-size: .73rem; line-height: 1.4
   border-left-color: #39485a;
 }
 .online-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px rgba(40,209,124,.6); }
+.machine-sections { display: grid; gap: 10px; }
 .machine-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .machine-tabs button { min-height: 37px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; background: #102035; border: 1px solid #263a50; border-radius: 10px; cursor: pointer; font-size: .75rem; }
 .machine-tabs button.active { background: rgba(40,192,227,.12); border-color: #298ca6; color: var(--cyan); }
 .machine-tab-wrap { position: relative; display: inline-flex; }
-.machine-tab-wrap > button:first-child { padding-right: 30px; }
+.machine-tab-wrap > button:first-child { padding-right: 52px; }
+.machine-tab-wrap .machine-edit { position: absolute; right: 27px; top: 4px; width: 24px; min-height: 28px; padding: 0; background: transparent; border: 0; color: #8294a9; }
 .machine-tab-wrap .machine-delete { position: absolute; right: 3px; top: 4px; width: 25px; min-height: 28px; padding: 0; background: transparent; border: 0; color: #8294a9; }
+.machine-tab-wrap .machine-edit:hover { color: var(--cyan); }
+.machine-tab-wrap .machine-delete:hover { color: var(--red); }
+.machine-group-label { display: inline-flex; align-items: center; gap: 6px; color: #f8cc68; font-size: .7rem; letter-spacing: .04em; text-transform: uppercase; }
+.monetized-machine-tabs { padding: 10px; border: 1px solid rgba(255,191,63,.22); border-radius: 12px; background: rgba(255,191,63,.035); }
+.monetized-machine > button:first-child { color: #f8d57e; border-color: rgba(255,191,63,.38); background: linear-gradient(135deg, rgba(255,191,63,.13), rgba(180,83,9,.05)); }
+.monetized-machine > button:first-child.active { color: #fff0b5; border-color: var(--amber); box-shadow: 0 0 14px rgba(255,191,63,.14); }
+.monetized-button { color: #f8d57e !important; border-color: rgba(255,191,63,.38) !important; }
 .table-panel { overflow: hidden; }
 .table-toolbar { min-height: 73px; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; gap: 15px; border-bottom: 1px solid #203246; }
 .search-box { min-width: 270px; height: 42px; padding: 0 12px; display: flex; align-items: center; gap: 8px; background: #091625; border: 1px solid #283c52; border-radius: 11px; color: #7f94ac; }
@@ -203,6 +212,38 @@ table { width: 100%; border-collapse: collapse; min-width: 840px; }
 th { height: 48px; padding: 0 14px; background: rgba(17,33,52,.8); color: #8fa6c0; font-size: .67rem; letter-spacing: .03em; text-align: left; white-space: nowrap; }
 td { padding: 13px 14px; border-top: 1px solid #1d3044; color: #c9d6e6; font-size: .76rem; vertical-align: middle; }
 tr:hover td { background: rgba(18,36,56,.45); }
+.monetized-account-row {
+  background: linear-gradient(
+    88deg,
+    #d4af3730,
+    #c99b2720 28%,
+    #22d3ee20 70%,
+    #22d3ee0a 100%
+  );
+
+  box-shadow: inset 4px 0 0 #d4af37;
+}
+
+.monetized-account-row td {
+  background: transparent;
+  border-top-color: #d4af3747;
+  border-bottom: 1px solid #d4af372e;
+}
+
+.monetized-account-row:hover {
+  background: linear-gradient(
+    88deg,
+    #d4af3740,
+    #c99b272b 28%,
+    #22d3ee2b 70%,
+    #22d3ee10 100%
+  );
+}
+
+.monetized-account-row:hover td {
+  background: transparent;
+}
+.monetized-badge { display: inline-flex; margin: 4px 0 0 6px; padding: 3px 7px; color: #ffe19a; background: rgba(255,191,63,.12); border: 1px solid rgba(255,191,63,.3); border-radius: 99px; font-size: .58rem; font-weight: 900; }
 td > strong { display: block; color: #e9f2fd; }
 td > small { max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .account-cell { display: flex; align-items: center; gap: 10px; min-width: 180px; }

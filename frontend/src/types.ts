@@ -33,6 +33,7 @@ export interface Machine {
   id: string;
   owner_id: string;
   machine_number: number;
+  machine_type: "NORMAL" | "MONETIZED";
   note?: string | null;
   account_count: number;
   created_at?: string | null;
@@ -51,6 +52,7 @@ export interface TikTokAccount {
   id: string;
   machine_id: string;
   machine_number: number;
+  machine_type: "NORMAL" | "MONETIZED";
   slot_number: number;
   owner_id: string;
   owner_name: string;
@@ -72,6 +74,8 @@ export interface TikTokAccount {
   previous_status?: string | null;
   is_private: boolean;
   is_verified: boolean;
+  is_monetized: boolean;
+  monetized_at?: string | null;
   last_error_code?: string | null;
   last_error_message?: string | null;
   last_checked_at?: string | null;
@@ -126,6 +130,7 @@ export interface AppSettings {
   next_auto_check_at?: string | null;
   last_auto_check_at?: string | null;
   follower_change_threshold: number;
+  monetization_follower_threshold: number;
   voice_notifications_enabled: boolean;
   max_total_workers?: number;
   max_workers_per_job?: number;

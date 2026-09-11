@@ -107,6 +107,7 @@ class Machine(Base):
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     machine_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    machine_type: Mapped[str] = mapped_column(Text, nullable=False, default="NORMAL")
     note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -148,6 +149,8 @@ class TikTokAccount(Base):
     previous_status: Mapped[str | None] = mapped_column(Text)
     is_private: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_monetized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    monetized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(Text)
     last_error_message: Mapped[str | None] = mapped_column(Text)
     last_http_status: Mapped[int | None] = mapped_column(Integer)
@@ -231,6 +234,7 @@ class AppSettings(Base):
     retry_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=2)
     dead_confirmation_attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=2)
     follower_change_threshold: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    monetization_follower_threshold: Mapped[int] = mapped_column(BigInteger, nullable=False, default=10500)
     in_app_notifications_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     voice_notifications_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(

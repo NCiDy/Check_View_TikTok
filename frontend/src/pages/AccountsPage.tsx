@@ -4,6 +4,7 @@ import {
   ArrowRightLeft,
   Crown,
   Eye,
+  Pencil,
   Plus,
   Search,
   Sparkles,
@@ -21,10 +22,11 @@ import type {
   Machine,
   TikTokAccount,
   User,
+  AppSettings,
 } from "../types";
 import { formatNumber, formatTime, statusLabel } from "../utils";
 
-type Dialog = "machine" | "accounts" | "detail" | "transfer" | null;
+type Dialog = "machine" | "monetized-machine" | "edit-machine" | "accounts" | "detail" | "transfer" | "monetization" | null;
 type SortMode = "MACHINE" | "FOLLOWERS" | "DELTA";
 
 function FollowerValue({
@@ -90,6 +92,7 @@ export function AccountsPage() {
   const [params, setParams] = useSearchParams();
   const [dialog, setDialog] = useState<Dialog>(null);
   const [detail, setDetail] = useState<TikTokAccount | null>(null);
+  const [editingMachine, setEditingMachine] = useState<Machine | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [machineId, setMachineId] = useState("ALL");
   const [search, setSearch] = useState("");
@@ -120,6 +123,7 @@ export function AccountsPage() {
     queryFn: () => api<{ accounts: TikTokAccount[] }>(`/api/accounts?owner_id=${encodeURIComponent(ownerId)}`),
     enabled: Boolean(ownerId),
   });
+  const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: () => api<{ settings: AppSettings }>("/api/settings") });
 
   const owner = usersQuery.data?.users.find((item) => item.id === ownerId);
     const isOwnAccount = owner?.id === user?.id;
@@ -172,6 +176,12 @@ export function AccountsPage() {
       )
     )
   );
+  const monetizationThreshold = settingsQuery.data?.settings.monetization_follower_threshold ?? 10500;
+  const hasEligibleAccount = (accountsQuery.data?.accounts || []).some(
+    (account) => (account.followers || 0) >= monetizationThreshold
+  );
+  const normalMachines = (machinesQuery.data?.machines || []).filter((machine) => machine.machine_type === "NORMAL");
+  const monetizedMachines = (machinesQuery.data?.machines || []).filter((machine) => machine.machine_type === "MONETIZED");
 
   const transferUsers = useMemo(() => {
     const activeUsers = (usersQuery.data?.users || []).filter(
@@ -243,6 +253,9 @@ export function AccountsPage() {
       first.slot_number - second.slot_number;
 
     return [...accounts].sort((first, second) => {
+      if (machineId === "ALL" && first.is_monetized !== second.is_monetized) {
+        return first.is_monetized ? -1 : 1;
+      }
       if (sortMode === "FOLLOWERS") {
         const firstValue = first.followers;
         const secondValue = second.followers;
@@ -513,7 +526,7 @@ export function AccountsPage() {
         <div className="page-heading compact">
           <div><p className="eyebrow">DANH SÁCH KÊNH</p><h1>{ownerId === "ALL" ? "Toàn công ty" : owner?.full_name || "Đang tải…"}</h1><p>{ownerId === "ALL" ? `${filtered.length} kênh có quyền xem` : `${owner?.machine_count || 0} máy · ${owner?.account_count || 0} kênh`}</p></div>
           <div className="heading-actions">
-            {canAdd && <><button className="button secondary" onClick={() => setDialog("machine")}><Plus size={16} /> Thêm máy</button><button className="button secondary" disabled={!machinesQuery.data?.machines.length} onClick={() => setDialog("accounts")}><Plus size={16} /> Thêm kênh</button></>}
+            {canAdd && <><button className="button secondary" onClick={() => setDialog("machine")}><Plus size={16} /> Thêm máy</button>{hasEligibleAccount && <button className="button secondary monetized-button" onClick={() => setDialog("monetized-machine")}><Crown size={16} /> Thêm máy BKT</button>}<button className="button secondary" disabled={!normalMachines.length} onClick={() => setDialog("accounts")}><Plus size={16} /> Thêm kênh</button></>}
             {selected.size > 0 && canCheck && <button className="button secondary" onClick={() => check.mutate({ scope_type: "SELECTED", account_ids: [...selected] })}>Check {selected.size} kênh</button>}
             {user?.role === "BOSS" && owner?.role === "LEADER" && <button className="button secondary" onClick={() => window.confirm(`Check toàn bộ nhóm của ${owner.full_name}?`) && check.mutate({ scope_type: "LEADER_GROUP", target_user_id: owner.id })}>Check cả nhóm</button>}
             {ownerId !== "ALL" && canCheck && <button className="button primary" onClick={() => check.mutate({ scope_type: "USER", target_user_id: ownerId })}>Check người này</button>}
@@ -521,9 +534,12 @@ export function AccountsPage() {
         </div>
 
         {ownerId !== "ALL" && Boolean(machinesQuery.data?.machines.length) && (
+          <div className="machine-sections">
           <div className="machine-tabs">
             <button className={machineId === "ALL" ? "active" : ""} onClick={() => setMachineId("ALL")}>Tất cả</button>
-            {machinesQuery.data?.machines.map((machine) => <span key={machine.id} className="machine-tab-wrap"><button className={machineId === machine.id ? "active" : ""} onClick={() => setMachineId(machine.id)}><Smartphone size={14} /> Máy #{machine.machine_number} <small>{machine.account_count}/10</small></button>{canDelete && <button className="machine-delete" title="Xóa máy" onClick={() => window.confirm(`Xóa máy #${machine.machine_number} và toàn bộ kênh?`) && deleteMachine.mutate(machine.id)}>×</button>}</span>)}
+            {normalMachines.map((machine) => <span key={machine.id} className="machine-tab-wrap"><button className={machineId === machine.id ? "active" : ""} onClick={() => setMachineId(machine.id)}><Smartphone size={14} /> Máy #{machine.machine_number}{machine.note && <small title={machine.note}> · {machine.note}</small>} <small>{machine.account_count}/10</small></button>{canAdd && <button className="machine-edit" title="Sửa máy" onClick={() => { setEditingMachine(machine); setDialog("edit-machine"); }}><Pencil size={12} /></button>}{canDelete && <button className="machine-delete" title="Xóa máy" onClick={() => window.confirm(`Xóa máy #${machine.machine_number} và toàn bộ kênh?`) && deleteMachine.mutate(machine.id)}>×</button>}</span>)}
+          </div>
+          {monetizedMachines.length > 0 && <div className="machine-tabs monetized-machine-tabs"><strong className="machine-group-label"><Crown size={14} /> Máy bật kiếm tiền</strong>{monetizedMachines.map((machine) => <span key={machine.id} className="machine-tab-wrap monetized-machine"><button className={machineId === machine.id ? "active" : ""} onClick={() => setMachineId(machine.id)}><Crown size={14} /> Máy #{machine.machine_number} · BKT{machine.note && <small title={machine.note}> · {machine.note}</small>} <small>{machine.account_count}/10</small></button>{canAdd && <button className="machine-edit" title="Sửa máy" onClick={() => { setEditingMachine(machine); setDialog("edit-machine"); }}><Pencil size={12} /></button>}{canDelete && <button className="machine-delete" title="Xóa máy" onClick={() => window.confirm(`Xóa máy BKT #${machine.machine_number} và toàn bộ kênh?`) && deleteMachine.mutate(machine.id)}>×</button>}</span>)}</div>}
           </div>
         )}
 
@@ -567,9 +583,9 @@ export function AccountsPage() {
             <table>
               <thead><tr><th><input type="checkbox" checked={Boolean(filtered.length && filtered.every((item) => selected.has(item.id)))} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((item) => item.id)) : new Set())} /></th><th>Máy / Kênh</th><th>Tài khoản</th><th>Trạng thái</th><th>Followers</th><th>Tổng view mẫu</th><th>Lần check</th><th /></tr></thead>
               <tbody>
-                {filtered.map((account) => <tr key={account.id}>
+                {filtered.map((account) => <tr key={account.id} className={account.is_monetized ? "monetized-account-row" : ""}>
                   <td><input type="checkbox" checked={selected.has(account.id)} onChange={(e) => setSelected((old) => { const next = new Set(old); e.target.checked ? next.add(account.id) : next.delete(account.id); return next; })} /></td>
-                  <td><strong>M#{account.machine_number} – K{account.slot_number}</strong><small>{account.owner_name}</small></td>
+                  <td><strong>M#{account.machine_number} – K{account.slot_number}</strong>{account.is_monetized && <span className="monetized-badge">BKT</span>}<small>{account.owner_name}</small></td>
                   <td><div className="account-cell"><Avatar name={account.nickname || account.username} url={account.avatar_url} size="sm" /><span><strong>@{account.username}</strong><small>{account.nickname || "Chưa có nickname"}</small></span></div></td>
                   <td><span className={`status-badge status-${account.status.toLowerCase()}`}>{account.status === "LIVE" && account.is_private ? "LIVE · RIÊNG TƯ" : statusLabel(account.status)}</span>{account.last_error_message && <small title={account.last_error_message}>{account.last_error_code}</small>}</td>
                   <td>
@@ -589,8 +605,7 @@ export function AccountsPage() {
         </section>
       </main>
 
-      {dialog === "machine" && owner && <MachineDialog owner={owner} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void refresh(); }} />}
-      {dialog === "accounts" && owner && <AccountsDialog owner={owner} machines={machinesQuery.data?.machines || []} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void refresh(); }} />}
+      {dialog === "accounts" && owner && <AccountsDialog owner={owner} machines={normalMachines} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void refresh(); }} />}
             {dialog === "detail" && detail && (
         <Modal
           title={`Chi tiết @${detail.username}`}
@@ -714,6 +729,17 @@ export function AccountsPage() {
 
             {canTransfer && (
               <button
+                className={detail.is_monetized ? "button secondary" : "button primary"}
+                disabled={!detail.is_monetized && (detail.followers || 0) < monetizationThreshold}
+                onClick={() => setDialog("monetization")}
+              >
+                <Crown size={16} />
+                {detail.is_monetized ? "Hủy trạng thái BKT" : "Xác nhận đã BKT"}
+              </button>
+            )}
+
+            {canTransfer && (
+              <button
                 className="button secondary"
                 onClick={() => setDialog("transfer")}
               >
@@ -738,19 +764,34 @@ export function AccountsPage() {
         </Modal>
       )}
       {dialog === "transfer" && detail && <TransferDialog account={detail} users={transferUsers} onClose={() => setDialog("detail")} onSaved={() => { setDialog(null); void refresh(); }} />}
+      {dialog === "monetization" && detail && <MonetizationDialog account={detail} users={transferUsers} onClose={() => setDialog("detail")} onSaved={() => { setDialog(null); void refresh(); }} />}
+      {dialog === "machine" && owner && <MachineDialog owner={owner} machineType="NORMAL" onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void refresh(); }} />}
+      {dialog === "monetized-machine" && owner && <MachineDialog owner={owner} machineType="MONETIZED" onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void refresh(); }} />}
+      {dialog === "edit-machine" && editingMachine && <EditMachineDialog machine={editingMachine} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); setEditingMachine(null); void refresh(); }} />}
     </div>
   );
 }
 
-function MachineDialog({ owner, onClose, onSaved }: { owner: User; onClose: () => void; onSaved: () => void }) {
+function MachineDialog({ owner, machineType, onClose, onSaved }: { owner: User; machineType: "NORMAL" | "MONETIZED"; onClose: () => void; onSaved: () => void }) {
   const [number, setNumber] = useState("");
   const [note, setNote] = useState("");
   const mutation = useMutation({
-    mutationFn: () => api("/api/machines", { method: "POST", body: JSON.stringify({ owner_id: owner.id, machine_number: Number(number), note: note || null }) }),
+    mutationFn: () => api("/api/machines", { method: "POST", body: JSON.stringify({ owner_id: owner.id, machine_number: Number(number), note: note || null, machine_type: machineType }) }),
     onSuccess: () => { notify("Đã thêm máy", "success"); onSaved(); },
     onError: (error) => notify((error as Error).message, "error"),
   });
   return <Modal title={`Thêm máy cho ${owner.full_name}`} onClose={onClose}><form className="form-stack" onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}><label>Số trên máy công ty<input type="number" min="1" max="32767" required value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Ví dụ: 47" autoFocus /></label><label>Ghi chú<input maxLength={200} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Không bắt buộc" /></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Hủy</button><button className="button primary" disabled={mutation.isPending}>Thêm máy</button></div></form></Modal>;
+}
+
+function EditMachineDialog({ machine, onClose, onSaved }: { machine: Machine; onClose: () => void; onSaved: () => void }) {
+  const [number, setNumber] = useState(String(machine.machine_number));
+  const [note, setNote] = useState(machine.note || "");
+  const mutation = useMutation({
+    mutationFn: () => api(`/api/machines/${machine.id}`, { method: "PATCH", body: JSON.stringify({ machine_number: Number(number), note: note || null }) }),
+    onSuccess: () => { notify("Đã cập nhật máy", "success"); onSaved(); },
+    onError: (error) => notify((error as Error).message, "error"),
+  });
+  return <Modal title={`Sửa máy #${machine.machine_number}`} onClose={onClose}><form className="form-stack" onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}><label>Số trên máy công ty<input type="number" min="1" max="32767" required value={number} onChange={(e) => setNumber(e.target.value)} autoFocus /></label><label>Ghi chú<input maxLength={200} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Không bắt buộc" /></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Hủy</button><button className="button primary" disabled={mutation.isPending}>Lưu thay đổi</button></div></form></Modal>;
 }
 
 function AccountsDialog({ owner, machines, onClose, onSaved }: { owner: User; machines: Machine[]; onClose: () => void; onSaved: () => void }) {
@@ -777,11 +818,30 @@ function TransferDialog({ account, users, onClose, onSaved }: { account: TikTokA
     queryKey: ["machines", ownerId],
     queryFn: () => api<{ machines: Machine[] }>(`/api/machines?owner_id=${encodeURIComponent(ownerId)}`),
   });
-  const machines = data?.machines || [];
+  const machines = (data?.machines || []).filter((machine) => machine.machine_type === account.machine_type);
   const mutation = useMutation({
     mutationFn: () => api(`/api/accounts/${account.id}/transfer`, { method: "PATCH", body: JSON.stringify({ machine_id: machineId, slot_number: slot }) }),
     onSuccess: () => { notify("Đã chuyển kênh", "success"); onSaved(); },
     onError: (error) => notify((error as Error).message, "error"),
   });
   return <Modal title={`Chuyển @${account.username}`} onClose={onClose}><form className="form-stack" onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}><label>Người nhận<select value={ownerId} onChange={(e) => { setOwnerId(e.target.value); setMachineId(""); }}>{users.filter((item) => item.is_active).map((person) => <option key={person.id} value={person.id}>{person.full_name} · {person.role}</option>)}</select></label><label>Máy đích<select value={machineId} required onChange={(e) => setMachineId(e.target.value)}><option value="">Chọn máy</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>Máy #{machine.machine_number} · {machine.account_count}/10 kênh</option>)}</select></label><label>Vị trí kênh<input type="number" min="1" max="10" value={slot} onChange={(e) => setSlot(Number(e.target.value))} required /></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Quay lại</button><button className="button primary" disabled={!machineId || mutation.isPending}>Chuyển kênh</button></div></form></Modal>;
+}
+
+function MonetizationDialog({ account, users, onClose, onSaved }: { account: TikTokAccount; users: User[]; onClose: () => void; onSaved: () => void }) {
+  const nextState = !account.is_monetized;
+  const [ownerId, setOwnerId] = useState(account.owner_id);
+  const [machineId, setMachineId] = useState("");
+  const [slot, setSlot] = useState(1);
+  const { data } = useQuery({
+    queryKey: ["machines", ownerId],
+    queryFn: () => api<{ machines: Machine[] }>(`/api/machines?owner_id=${encodeURIComponent(ownerId)}`),
+  });
+  const requiredType = nextState ? "MONETIZED" : "NORMAL";
+  const machines = (data?.machines || []).filter((machine) => machine.machine_type === requiredType);
+  const mutation = useMutation({
+    mutationFn: () => api(`/api/accounts/${account.id}/monetization`, { method: "PATCH", body: JSON.stringify({ is_monetized: nextState, machine_id: machineId, slot_number: slot }) }),
+    onSuccess: () => { notify(nextState ? "Đã xác nhận kênh BKT" : "Đã hủy trạng thái BKT", "success"); onSaved(); },
+    onError: (error) => notify((error as Error).message, "error"),
+  });
+  return <Modal title={nextState ? `Xác nhận @${account.username} đã BKT` : `Hủy BKT của @${account.username}`} onClose={onClose}><form className="form-stack" onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}><label>Người nhận<select value={ownerId} onChange={(e) => { setOwnerId(e.target.value); setMachineId(""); }}>{users.filter((item) => item.is_active).map((person) => <option key={person.id} value={person.id}>{person.full_name} · {person.role}</option>)}</select></label><label>{nextState ? "Máy BKT đích" : "Máy thường đích"}<select required value={machineId} onChange={(e) => setMachineId(e.target.value)}><option value="">Chọn máy</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>Máy #{machine.machine_number}{machine.machine_type === "MONETIZED" ? " · BKT" : ""} · {machine.account_count}/10 kênh</option>)}</select></label><label>Vị trí kênh<input type="number" min="1" max="10" value={slot} onChange={(e) => setSlot(Number(e.target.value))} required /></label>{!machines.length && <small>Người này chưa có máy phù hợp.</small>}<div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Quay lại</button><button className="button primary" disabled={!machineId || mutation.isPending}>{nextState ? "Xác nhận và chuyển" : "Hủy BKT và chuyển"}</button></div></form></Modal>;
 }

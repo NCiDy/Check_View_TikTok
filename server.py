@@ -390,6 +390,12 @@ class MachineCreateRequest(BaseModel):
     owner_id: str
     machine_number: int = Field(ge=1, le=32767)
     note: str | None = Field(default=None, max_length=200)
+    machine_type: Literal["NORMAL", "MONETIZED"] = "NORMAL"
+
+
+class MachineUpdateRequest(BaseModel):
+    machine_number: int = Field(ge=1, le=32767)
+    note: str | None = Field(default=None, max_length=200)
 
 
 class BulkAccountsRequest(BaseModel):
@@ -398,6 +404,12 @@ class BulkAccountsRequest(BaseModel):
 
 
 class TransferAccountRequest(BaseModel):
+    machine_id: str
+    slot_number: int = Field(ge=1, le=10)
+
+
+class MonetizationRequest(BaseModel):
+    is_monetized: bool
     machine_id: str
     slot_number: int = Field(ge=1, le=10)
 
@@ -418,6 +430,7 @@ class SettingsUpdateRequest(BaseModel):
     retry_count: int | None = Field(default=None, ge=0, le=5)
     dead_confirmation_attempts: int | None = Field(default=None, ge=2, le=5)
     follower_change_threshold: int | None = Field(default=None, ge=1)
+    monetization_follower_threshold: int | None = Field(default=None, ge=1, le=1000000000)
     in_app_notifications_enabled: bool | None = None
     voice_notifications_enabled: bool | None = None
 
@@ -480,6 +493,7 @@ def serialize_machine(db: Session, machine: Machine) -> dict[str, Any]:
         "id": str(machine.id),
         "owner_id": str(machine.owner_id),
         "machine_number": machine.machine_number,
+        "machine_type": machine.machine_type,
         "note": machine.note,
         "account_count": int(account_count),
         "created_at": iso(machine.created_at),
@@ -497,6 +511,7 @@ def serialize_account(account: TikTokAccount, machine: Machine, owner: User) -> 
         "id": str(account.id),
         "machine_id": str(machine.id),
         "machine_number": machine.machine_number,
+        "machine_type": machine.machine_type,
         "slot_number": account.slot_number,
         "owner_id": str(owner.id),
         "owner_name": owner.full_name,
@@ -518,6 +533,8 @@ def serialize_account(account: TikTokAccount, machine: Machine, owner: User) -> 
         "previous_status": account.previous_status,
         "is_private": account.is_private,
         "is_verified": account.is_verified,
+        "is_monetized": account.is_monetized,
+        "monetized_at": iso(account.monetized_at),
         "last_error_code": account.last_error_code,
         "last_error_message": account.last_error_message,
         "last_checked_at": iso(account.last_checked_at),
@@ -1102,19 +1119,23 @@ async def create_machine(
     ensure_can_manage_accounts(db, current, owner_id, "can_add_accounts")
 
     machine_count = db.scalar(
-        select(func.count(Machine.id)).where(Machine.owner_id == owner_id)
+        select(func.count(Machine.id)).where(
+            Machine.owner_id == owner_id,
+            Machine.machine_type == payload.machine_type,
+        )
     ) or 0
 
     if machine_count >= 10:
         raise HTTPException(
             status_code=400,
-            detail="Mỗi người chỉ được thêm tối đa 10 máy"
+            detail="Mỗi người chỉ được thêm tối đa 10 máy cho mỗi loại"
         )
 
     machine = Machine(
         owner_id=owner_id,
         machine_number=payload.machine_number,
-        note=payload.note
+        note=payload.note,
+        machine_type=payload.machine_type,
     )
     db.add(machine)
     try:
@@ -1129,6 +1150,33 @@ async def create_machine(
         db.rollback()
         raise HTTPException(status_code=409, detail="Số máy này đã tồn tại") from exc
     await ws_manager.broadcast("data_updated", {"source": "machine", "owner_id": str(owner_id)})
+    return {"machine": serialize_machine(db, machine)}
+
+
+@app.patch("/api/machines/{machine_id}")
+async def update_machine(
+    machine_id: str,
+    payload: MachineUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(csrf_protect),
+):
+    machine = db.get(Machine, parse_uuid(machine_id, "Machine ID"))
+    if machine is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy máy")
+    ensure_can_manage_accounts(db, current, machine.owner_id, "can_add_accounts")
+    old_number = machine.machine_number
+    machine.machine_number = payload.machine_number
+    machine.note = payload.note
+    try:
+        write_audit(db, request, current, "MACHINE_UPDATED", "MACHINE", machine.id,
+                    {"old_machine_number": old_number, "machine_number": machine.machine_number})
+        db.commit()
+        db.refresh(machine)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Số máy này đã tồn tại") from exc
+    await ws_manager.broadcast("data_updated", {"source": "machine", "owner_id": str(machine.owner_id)})
     return {"machine": serialize_machine(db, machine)}
 
 
@@ -1172,6 +1220,8 @@ async def add_accounts_bulk(
     ensure_can_manage_accounts(
     db, current, machine.owner_id, "can_add_accounts"
 )
+    if machine.machine_type != "NORMAL":
+        raise HTTPException(status_code=400, detail="Không thể thêm kênh trực tiếp vào máy BKT")
 
     occupied = set(db.scalars(select(TikTokAccount.slot_number).where(TikTokAccount.machine_id == machine.id)))
     available = deque(slot for slot in range(1, 11) if slot not in occupied)
@@ -1317,6 +1367,10 @@ async def transfer_account(
         target_machine.owner_id,
     )
 
+    expected_type = "MONETIZED" if account.is_monetized else "NORMAL"
+    if target_machine.machine_type != expected_type:
+        raise HTTPException(status_code=400, detail="Kênh thường và kênh BKT không thể chuyển lẫn loại máy")
+
     occupied = db.scalar(
         select(TikTokAccount.id).where(
             TikTokAccount.machine_id == target_machine.id,
@@ -1356,6 +1410,55 @@ async def transfer_account(
         {"source": "account_transfer"},
     )
 
+    return {"success": True}
+
+
+@app.patch("/api/accounts/{account_id}/monetization")
+async def update_account_monetization(
+    account_id: str,
+    payload: MonetizationRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(csrf_protect),
+):
+    account = db.get(TikTokAccount, parse_uuid(account_id, "Account ID"))
+    target_machine = db.get(Machine, parse_uuid(payload.machine_id, "Machine ID"))
+    if account is None or target_machine is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kênh hoặc máy đích")
+
+    old_owner_id = machine_owner(db, account.machine_id)
+    ensure_can_transfer_account(db, current, old_owner_id, target_machine.owner_id)
+
+    required_type = "MONETIZED" if payload.is_monetized else "NORMAL"
+    if target_machine.machine_type != required_type:
+        raise HTTPException(status_code=400, detail="Máy đích không đúng loại")
+
+    if payload.is_monetized:
+        settings = db.get(AppSettings, 1)
+        if settings is None:
+            raise HTTPException(status_code=500, detail="Thiếu app_settings")
+        if account.followers is None or account.followers < settings.monetization_follower_threshold:
+            raise HTTPException(status_code=400, detail="Kênh chưa đạt ngưỡng followers để xác nhận BKT")
+
+    occupied = db.scalar(select(TikTokAccount.id).where(
+        TikTokAccount.machine_id == target_machine.id,
+        TikTokAccount.slot_number == payload.slot_number,
+        TikTokAccount.id != account.id,
+    ))
+    if occupied:
+        raise HTTPException(status_code=409, detail="Vị trí kênh trên máy đích đã được sử dụng")
+
+    account.machine_id = target_machine.id
+    account.slot_number = payload.slot_number
+    account.is_monetized = payload.is_monetized
+    account.monetized_at = utcnow() if payload.is_monetized else None
+    write_audit(
+        db, request, current, "ACCOUNT_MONETIZATION_UPDATED", "TIKTOK_ACCOUNT", account.id,
+        {"is_monetized": payload.is_monetized, "to_owner_id": str(target_machine.owner_id),
+         "machine_id": str(target_machine.id), "slot_number": payload.slot_number},
+    )
+    db.commit()
+    await ws_manager.broadcast("data_updated", {"source": "account_monetization"})
     return {"success": True}
 
 
@@ -1602,6 +1705,7 @@ def get_settings(db: Session = Depends(get_db), current: User = Depends(get_curr
         "next_auto_check_at": iso(row.next_auto_check_at),
         "last_auto_check_at": iso(row.last_auto_check_at),
         "follower_change_threshold": row.follower_change_threshold,
+        "monetization_follower_threshold": row.monetization_follower_threshold,
         "voice_notifications_enabled": row.voice_notifications_enabled,
     }
     if current.role == "BOSS":

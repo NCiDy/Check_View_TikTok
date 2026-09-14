@@ -1048,3 +1048,126 @@ tbody tr:hover .follower-highlight {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+/* Dashboard analytics */
+.dashboard-analytics {
+  display: grid;
+  grid-template-columns: minmax(0, 1.75fr) minmax(340px, .95fr);
+  gap: 14px;
+}
+.breakthrough-panel, .composition-panel { overflow: hidden; }
+.analytics-heading {
+  min-height: 84px;
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #203246;
+}
+.analytics-heading h2 { margin: 0 0 4px; }
+.analytics-heading .eyebrow { margin-bottom: 5px; }
+.standout-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 8px 11px;
+  color: #f8d57e;
+  background: rgba(212, 175, 55, .08);
+  border: 1px solid rgba(212, 175, 55, .28);
+  border-radius: 999px;
+  font-size: .68rem;
+  font-weight: 800;
+}
+.breakthrough-list { padding: 10px; display: grid; gap: 6px; }
+.breakthrough-row {
+  width: 100%;
+  min-height: 67px;
+  padding: 9px 12px;
+  display: grid;
+  grid-template-columns: 36px minmax(150px, 1fr) minmax(180px, 1.2fr) 76px;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  background: #0c1a2b;
+  border: 1px solid #20364c;
+  border-radius: 11px;
+  cursor: pointer;
+}
+.breakthrough-row:hover { background: #10243a; border-color: #2d5874; }
+.breakthrough-rank {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: #a9b9ca;
+  background: #14263a;
+  border: 1px solid #2a4158;
+  border-radius: 50%;
+  font-size: .76rem;
+  font-weight: 900;
+}
+.rank-1 { color: #3b2900; background: #f7c843; border-color: #ffe083; }
+.rank-2 { color: #273241; background: #c5cfda; border-color: #e5ebf1; }
+.rank-3 { color: #3d210d; background: #d99155; border-color: #efb47d; }
+.breakthrough-account { min-width: 0; }
+.breakthrough-account strong, .breakthrough-account small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.breakthrough-account strong { display: block; color: #eaf4ff; font-size: .76rem; }
+.breakthrough-progress { display: grid; gap: 6px; }
+.breakthrough-values { color: #b7c7d8; font-size: .68rem; font-variant-numeric: tabular-nums; }
+.breakthrough-track { height: 8px; overflow: hidden; background: #192d43; border-radius: 999px; }
+.breakthrough-track i { display: block; height: 100%; background: linear-gradient(90deg, #28d6eb, #398cff); border-radius: inherit; }
+.breakthrough-delta { color: #37e892; font-size: .92rem; text-align: right; font-variant-numeric: tabular-nums; }
+.analytics-empty { padding: 76px 20px; color: #8296ad; text-align: center; }
+.composition-content { min-height: 365px; padding: 24px 20px; display: grid; grid-template-columns: minmax(160px, 1fr) minmax(145px, .85fr); align-items: center; gap: 20px; }
+.donut-chart {
+  width: min(230px, 100%);
+  aspect-ratio: 1;
+  margin: auto;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  box-shadow: 0 0 28px rgba(36, 180, 226, .08);
+}
+.donut-chart > div {
+  width: 58%;
+  aspect-ratio: 1;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  background: #0e1c2d;
+  border: 1px solid #253a50;
+  border-radius: 50%;
+}
+.donut-chart strong { color: #f1f7ff; font-size: 1.55rem; }
+.donut-chart span { margin-top: 3px; color: #91a5bc; font-size: .7rem; }
+.composition-legend { display: grid; gap: 5px; }
+.composition-legend button {
+  width: 100%;
+  padding: 7px 6px;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.composition-legend button:hover { background: #12243a; }
+.composition-legend i { width: 9px; height: 9px; border-radius: 50%; }
+.composition-legend strong { display: block; color: #c9d7e6; font-size: .67rem; }
+.composition-legend small { margin-top: 2px; font-size: .61rem; }
+@media (max-width: 1120px) {
+  .dashboard-analytics { grid-template-columns: 1fr; }
+  .composition-content { grid-template-columns: minmax(180px, .7fr) minmax(200px, 1fr); }
+}
+@media (max-width: 680px) {
+  .analytics-heading { align-items: flex-start; flex-direction: column; }
+  .breakthrough-row { grid-template-columns: 32px minmax(0, 1fr) 70px; }
+  .breakthrough-progress { grid-column: 2 / -1; }
+  .composition-content { grid-template-columns: 1fr; }
+  .donut-chart { width: 205px; }
+}

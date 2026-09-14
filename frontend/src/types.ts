@@ -116,6 +116,26 @@ export interface Dashboard {
     delta: number;
     checked_at?: string | null;
   }>;
+  breakthrough_channels: Array<{
+    account_id: string;
+    owner_id: string;
+    username: string;
+    owner_name: string;
+    machine_number: number;
+    slot_number: number;
+    before: number;
+    after: number;
+    delta: number;
+    checked_at?: string | null;
+  }>;
+  composition: {
+    monetized: number;
+    join_pending: number;
+    large: number;
+    review_pending: number;
+    rejected: number;
+    remaining: number;
+  };
 }
 
 export interface CheckRun {

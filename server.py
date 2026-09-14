@@ -1522,11 +1522,22 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
     ).all() if owner_ids else []
     accounts = [row[0] for row in rows]
     last_checked = max((a.last_checked_at for a in accounts if a.last_checked_at), default=None)
+
     recent_changes = []
+    breakthrough_channels = []
+    composition = {
+        "monetized": 0,
+        "join_pending": 0,
+        "large": 0,
+        "review_pending": 0,
+        "rejected": 0,
+        "remaining": 0,
+    }
+
     for account, machine, owner in rows:
         if account.auto_followers is not None and account.previous_auto_followers is not None:
-            delta = account.auto_followers - account.previous_auto_followers
-            if delta:
+            auto_delta = account.auto_followers - account.previous_auto_followers
+            if auto_delta:
                 recent_changes.append({
                     "account_id": str(account.id),
                     "owner_id": str(owner.id),
@@ -1536,10 +1547,42 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
                     "slot_number": account.slot_number,
                     "before": account.previous_auto_followers,
                     "after": account.auto_followers,
-                    "delta": delta,
+                    "delta": auto_delta,
                     "checked_at": iso(account.auto_checked_at),
                 })
+
+        if account.followers is not None and account.previous_followers is not None:
+            follower_delta = account.followers - account.previous_followers
+            if follower_delta > 0:
+                breakthrough_channels.append({
+                    "account_id": str(account.id),
+                    "owner_id": str(owner.id),
+                    "username": account.username,
+                    "owner_name": owner.full_name,
+                    "machine_number": machine.machine_number,
+                    "slot_number": account.slot_number,
+                    "before": account.previous_followers,
+                    "after": account.followers,
+                    "delta": follower_delta,
+                    "checked_at": iso(account.last_checked_at),
+                })
+
+        if account.channel_condition == "REJECTED":
+            composition["rejected"] += 1
+        elif account.channel_condition == "OUT_BETA_REVIEW":
+            composition["review_pending"] += 1
+        elif account.is_monetized:
+            composition["monetized"] += 1
+        elif account.followers is not None and 10000 <= account.followers <= 10600:
+            composition["join_pending"] += 1
+        elif account.followers is not None and 7000 <= account.followers <= 9999:
+            composition["large"] += 1
+        else:
+            composition["remaining"] += 1
+
     recent_changes.sort(key=lambda item: item["checked_at"] or "", reverse=True)
+    breakthrough_channels.sort(key=lambda item: item["delta"], reverse=True)
+
     return {
         "total": len(accounts),
         "live": sum(a.status == "LIVE" for a in accounts),
@@ -1560,6 +1603,8 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
         "new_problem": sum(a.previous_status == "LIVE" and a.status in {"DIE", "ERROR"} for a in accounts),
         "last_checked_at": iso(last_checked),
         "recent_changes": recent_changes[:30],
+        "breakthrough_channels": breakthrough_channels[:5],
+        "composition": composition,
     }
 
 @app.patch("/api/departments/{department_id}")

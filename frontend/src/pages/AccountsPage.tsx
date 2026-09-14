@@ -121,6 +121,7 @@ export function AccountsPage() {
   const [sortMode, setSortMode] = useState<SortMode>("FOLLOWERS");
   const ownerId = params.get("owner") || user?.id || "";
   const status = params.get("status") || "ALL";
+  const condition = params.get("condition") || "ALL";
 
   const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: () => api<{ users: User[] }>("/api/users") });
@@ -277,6 +278,13 @@ export function AccountsPage() {
           return false;
         }
 
+        if (
+          condition !== "ALL" &&
+          account.channel_condition !== condition
+        ) {
+          return false;
+        }
+
         return true;
       }
     );
@@ -331,6 +339,7 @@ export function AccountsPage() {
     machineId,
     search,
     status,
+    condition,
     sortMode,
   ]);
 
@@ -654,7 +663,7 @@ export function AccountsPage() {
                 </button>
               </div>
             </div>
-            <div className="filter-chips">{["ALL", "LIVE", "DIE", "ERROR", "UNCHECKED"].map((item) => <button key={item} className={status === item ? "active" : ""} onClick={() => setParams({ owner: ownerId, status: item })}>{item === "ALL" ? "Tất cả" : statusLabel(item)}</button>)}</div>
+            <div className="filter-chips">{["ALL", "LIVE", "DIE", "ERROR", "UNCHECKED"].map((item) => <button key={item} className={status === item ? "active" : ""} onClick={() => setParams({ owner: ownerId, status: item })}>{item === "ALL" ? "Tất cả" : statusLabel(item)}</button>)} {condition !== "ALL" && (<button type="button" className="active" onClick={() => setParams({owner: ownerId, status,})}>{condition === "OUT_BETA_REVIEW" ? "Chờ duyệt lại ×" : "Loại ×"}</button>)}</div>
           </div>
           <div className="table-scroll">
             <table>

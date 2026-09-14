@@ -18,13 +18,55 @@ export function DashboardPage() {
   });
 
   const cards = [
-    { label: "Tổng kênh", value: data?.total, icon: UsersRound, tone: "blue", filter: "ALL" },
-    { label: "Đang LIVE", value: data?.live, icon: CheckCircle2, tone: "green", filter: "LIVE" },
-    { label: "Tổng kênh BKT", value: data?.monetized, icon: Crown, tone: "amber", filter: "ALL" },
-    { label: "Chờ JOIN", value: data?.join_pending, icon: Clock3, tone: "violet", filter: "ALL" },
-    { label: "Kênh to", value: data?.large, icon: TrendingUp, tone: "blue", filter: "ALL" },
-    { label: "Chờ duyệt lại", value: data?.review_pending, icon: Radio, tone: "amber", filter: "ALL" },
-    { label: "Loại", value: data?.rejected, icon: ShieldAlert, tone: "red", filter: "ALL" },
+    {
+      label: "Tổng kênh",
+      value: data?.total,
+      icon: UsersRound,
+      tone: "blue",
+      href: "/accounts?owner=ALL&status=ALL",
+    },
+    {
+      label: "Đang LIVE",
+      value: data?.live,
+      icon: CheckCircle2,
+      tone: "green",
+      href: "/accounts?owner=ALL&status=LIVE",
+    },
+    {
+      label: "Tổng kênh BKT",
+      value: data?.monetized,
+      icon: Crown,
+      tone: "amber",
+      href: "/accounts?owner=ALL&status=ALL",
+    },
+    {
+      label: "Chờ JOIN",
+      value: data?.join_pending,
+      icon: Clock3,
+      tone: "violet",
+      href: "/accounts?owner=ALL&status=ALL",
+    },
+    {
+      label: "Kênh to",
+      value: data?.large,
+      icon: TrendingUp,
+      tone: "blue",
+      href: "/accounts?owner=ALL&status=ALL",
+    },
+    {
+      label: "Chờ duyệt lại",
+      value: data?.review_pending,
+      icon: Radio,
+      tone: "amber",
+      href: "/accounts?owner=ALL&status=ALL&condition=OUT_BETA_REVIEW",
+    },
+    {
+      label: "Loại",
+      value: data?.rejected,
+      icon: ShieldAlert,
+      tone: "red",
+      href: "/accounts?owner=ALL&status=ALL&condition=REJECTED",
+    },
   ];
 
   const title = isCompanyAdmin ? "Toàn công ty" : user?.role === "LEADER" ? "Nhóm của bạn" : "Kênh của bạn";
@@ -41,8 +83,12 @@ export function DashboardPage() {
       </div>
 
       <section className="metric-grid">
-        {cards.map(({ label, value, icon: Icon, tone, filter }) => (
-          <button key={label} className={`metric-card tone-${tone}`} onClick={() => navigate(`/accounts?status=${filter}&owner=ALL`)}>
+        {cards.map(({ label, value, icon: Icon, tone, href }) => (
+          <button
+            key={label}
+            className={`metric-card tone-${tone}`}
+            onClick={() => navigate(href)}
+          >
             <span className="metric-icon"><Icon size={20} /></span>
             <span className="metric-label">{label}</span>
             <strong>{isLoading ? "…" : formatNumber(value || 0)}</strong>

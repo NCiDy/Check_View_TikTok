@@ -414,6 +414,17 @@ class MonetizationRequest(BaseModel):
     slot_number: int = Field(ge=1, le=10)
 
 
+class ChannelConditionRequest(BaseModel):
+    channel_condition: Literal[
+        "ONE_STRIKE",
+        "TWO_STRIKES",
+        "THREE_STRIKES",
+        "FOUR_STRIKES",
+        "OUT_BETA_REVIEW",
+        "REJECTED",
+    ] | None = None
+
+
 class CheckStartRequest(BaseModel):
     scope_type: Literal["SELECTED", "USER", "LEADER_GROUP", "COMPANY"]
     target_user_id: str | None = None
@@ -535,6 +546,7 @@ def serialize_account(account: TikTokAccount, machine: Machine, owner: User) -> 
         "is_verified": account.is_verified,
         "is_monetized": account.is_monetized,
         "monetized_at": iso(account.monetized_at),
+        "channel_condition": account.channel_condition,
         "last_error_code": account.last_error_code,
         "last_error_message": account.last_error_message,
         "last_checked_at": iso(account.last_checked_at),
@@ -1462,6 +1474,43 @@ async def update_account_monetization(
     return {"success": True}
 
 
+@app.patch("/api/accounts/{account_id}/condition")
+async def update_account_condition(
+    account_id: str,
+    payload: ChannelConditionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(csrf_protect),
+):
+    account = db.get(TikTokAccount, parse_uuid(account_id, "Account ID"))
+    if account is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
+
+    owner_id = machine_owner(db, account.machine_id)
+    ensure_can_transfer_account(db, current, owner_id, owner_id)
+    previous_condition = account.channel_condition
+    account.channel_condition = payload.channel_condition
+    write_audit(
+        db,
+        request,
+        current,
+        "ACCOUNT_CONDITION_UPDATED",
+        "TIKTOK_ACCOUNT",
+        account.id,
+        {
+            "owner_id": str(owner_id),
+            "previous_condition": previous_condition,
+            "channel_condition": payload.channel_condition,
+        },
+    )
+    db.commit()
+    await ws_manager.broadcast(
+        "data_updated",
+        {"source": "account_condition", "owner_id": str(owner_id)},
+    )
+    return {"success": True}
+
+
 @app.get("/api/dashboard")
 def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     owner_ids = visible_owner_ids(db, current)
@@ -1494,6 +1543,17 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
     return {
         "total": len(accounts),
         "live": sum(a.status == "LIVE" for a in accounts),
+        "monetized": sum(a.is_monetized for a in accounts),
+        "join_pending": sum(
+            not a.is_monetized and a.followers is not None and 10000 <= a.followers <= 10600
+            for a in accounts
+        ),
+        "large": sum(
+            not a.is_monetized and a.followers is not None and 7000 <= a.followers <= 9999
+            for a in accounts
+        ),
+        "review_pending": sum(a.channel_condition == "OUT_BETA_REVIEW" for a in accounts),
+        "rejected": sum(a.channel_condition == "REJECTED" for a in accounts),
         "die": sum(a.status == "DIE" for a in accounts),
         "error": sum(a.status in {"ERROR", "UNCHECKED"} for a in accounts),
         "unchecked": sum(a.status == "UNCHECKED" for a in accounts),

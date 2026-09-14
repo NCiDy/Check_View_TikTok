@@ -76,15 +76,29 @@ export interface TikTokAccount {
   is_verified: boolean;
   is_monetized: boolean;
   monetized_at?: string | null;
+  channel_condition?: ChannelCondition | null;
   last_error_code?: string | null;
   last_error_message?: string | null;
   last_checked_at?: string | null;
   last_successful_checked_at?: string | null;
 }
 
+export type ChannelCondition =
+  | "ONE_STRIKE"
+  | "TWO_STRIKES"
+  | "THREE_STRIKES"
+  | "FOUR_STRIKES"
+  | "OUT_BETA_REVIEW"
+  | "REJECTED";
+
 export interface Dashboard {
   total: number;
   live: number;
+  monetized: number;
+  join_pending: number;
+  large: number;
+  review_pending: number;
+  rejected: number;
   die: number;
   error: number;
   unchecked: number;

@@ -103,14 +103,14 @@ small { display: block; color: var(--muted); font-size: .73rem; line-height: 1.4
 .panel-heading { padding: 20px 22px; border-bottom: 1px solid #203246; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .panel-heading h2 { margin: 0; }
 
-.metric-grid { display: grid; grid-template-columns: repeat(5, minmax(145px, 1fr)); gap: 13px; }
-.metric-card { text-align: left; position: relative; min-height: 145px; border: 1px solid #26394e; border-radius: 17px; background: linear-gradient(145deg, rgba(16,31,50,.96), rgba(12,24,39,.96)); padding: 18px; cursor: pointer; overflow: hidden; }
+.metric-grid { display: grid; grid-template-columns: repeat(7, minmax(105px, 1fr)); gap: 10px; }
+.metric-card { text-align: left; position: relative; min-height: 112px; border: 1px solid #26394e; border-radius: 14px; background: linear-gradient(145deg, rgba(16,31,50,.96), rgba(12,24,39,.96)); padding: 13px; cursor: pointer; overflow: hidden; }
 .metric-card::after { content: ""; position: absolute; width: 90px; height: 90px; right: -30px; top: -30px; border-radius: 50%; background: currentColor; opacity: .05; }
 .metric-card:hover { border-color: #3a536c; transform: translateY(-2px); }
-.metric-card .metric-icon { width: 35px; height: 35px; display: grid; place-items: center; border-radius: 10px; background: currentColor; }
+.metric-card .metric-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; background: currentColor; }
 .metric-card .metric-icon svg { color: #07111f; }
-.metric-card .metric-label { display: block; margin-top: 15px; color: #9cafc5; font-size: .72rem; font-weight: 700; }
-.metric-card strong { display: block; margin-top: 5px; font-size: 1.8rem; color: #f1f7ff; }
+.metric-card .metric-label { display: block; margin-top: 10px; color: #9cafc5; font-size: .68rem; font-weight: 700; }
+.metric-card strong { display: block; margin-top: 3px; font-size: 1.45rem; color: #f1f7ff; }
 .tone-blue { color: var(--blue); }.tone-green { color: var(--green); }.tone-red { color: var(--red); }.tone-violet { color: var(--violet); }.tone-amber { color: var(--amber); }
 .change-list { padding: 7px 12px 13px; }
 .change-row { width: 100%; border: 0; background: transparent; padding: 13px 11px; display: flex; justify-content: space-between; align-items: center; gap: 20px; border-radius: 10px; text-align: left; }
@@ -120,6 +120,10 @@ small { display: block; color: var(--muted); font-size: .73rem; line-height: 1.4
 .empty-state { padding: 52px 20px; text-align: center; color: #8396ad; }
 
 .accounts-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 18px; align-items: start; }
+.account-metric-grid { display: grid; grid-template-columns: repeat(7, minmax(90px, 1fr)); gap: 8px; }
+.account-metric-card { min-width: 0; padding: 11px 12px; border: 1px solid #26394e; border-radius: 12px; background: linear-gradient(145deg, rgba(16,31,50,.96), rgba(12,24,39,.96)); }
+.account-metric-card span { display: block; overflow: hidden; color: #9cafc5; font-size: .64rem; font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.account-metric-card strong { display: block; margin-top: 4px; color: #f1f7ff; font-size: 1.2rem; }
 .people-rail { position: sticky; top: 96px; padding: 12px; max-height: calc(100vh - 120px); overflow-y: auto; }
 .rail-heading { padding: 8px 7px 13px; }
 .person-row { width: 100%; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid transparent; background: transparent; border-radius: 11px; text-align: left; cursor: pointer; }
@@ -248,6 +252,11 @@ td > strong { display: block; color: #e9f2fd; }
 td > small { max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .account-cell { display: flex; align-items: center; gap: 10px; min-width: 180px; }
 .status-badge, .role-pill, .current-pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 99px; padding: 5px 9px; font-size: .62rem; font-weight: 800; white-space: nowrap; }
+.condition-select { min-width: 142px; padding: 7px 28px 7px 9px; border-radius: 8px; font-size: .7rem; }
+.condition-select:disabled { cursor: not-allowed; opacity: .72; }
+.condition-one_strike, .condition-two_strikes, .condition-three_strikes, .condition-four_strikes { color: #ffc85a; border-color: rgba(255,191,63,.4); }
+.condition-out_beta_review { color: #aeb2ff; border-color: rgba(139,145,255,.4); }
+.condition-rejected { color: #ff8a9b; border-color: rgba(255,98,120,.45); }
 .status-live { color: #56e49a; background: rgba(40,209,124,.11); }.status-die, .status-failed { color: #ff788d; background: rgba(255,98,120,.11); }.status-error, .status-unchecked, .status-stopped { color: #ffc85a; background: rgba(255,191,63,.11); }.status-running, .status-queued { color: #68cbff; background: rgba(75,168,255,.12); }
 .role-boss { color: #ffc85a; background: rgba(255,191,63,.1); }.role-leader { color: #64dafa; background: rgba(45,212,247,.1); }.role-member { color: #a8b9cd; background: rgba(142,161,184,.1); }
 
@@ -685,6 +694,7 @@ textarea { resize: vertical; line-height: 1.55; }
 
 @media (max-width: 1180px) {
   .metric-grid { grid-template-columns: repeat(3,1fr); }
+  .account-metric-grid { grid-template-columns: repeat(4, minmax(110px, 1fr)); }
   .settings-grid { grid-template-columns: repeat(2,1fr); }
   .topbar-button span { display: none; }
 }
@@ -703,6 +713,7 @@ textarea { resize: vertical; line-height: 1.55; }
   .topbar { padding: 0 13px; }.topbar-context { display: none; }.topbar-actions { margin-left: auto; gap: 5px; }.topbar-button { padding: 0 8px; }
   .page-heading { align-items: flex-start; flex-direction: column; }.heading-actions { justify-content: flex-start; }
   .metric-grid { grid-template-columns: repeat(2,1fr); }.metric-card { min-height: 130px; }
+  .account-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .table-toolbar { align-items: stretch; flex-direction: column; }.search-box { min-width: 0; }.filter-chips { overflow-x: auto; flex-wrap: nowrap; }
   .form-grid, .settings-grid { grid-template-columns: 1fr; }.full-row { grid-column: auto; }
   .detail-grid { grid-template-columns: repeat(2,1fr); }

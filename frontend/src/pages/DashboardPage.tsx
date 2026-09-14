@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, Clock3, Radio, UsersRound } from "lucide-react";
+import { CheckCircle2, Clock3, Crown, Radio, ShieldAlert, TrendingUp, UsersRound } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { useAuth } from "../AuthContext";
@@ -20,9 +20,11 @@ export function DashboardPage() {
   const cards = [
     { label: "Tổng kênh", value: data?.total, icon: UsersRound, tone: "blue", filter: "ALL" },
     { label: "Đang LIVE", value: data?.live, icon: CheckCircle2, tone: "green", filter: "LIVE" },
-    { label: "DIE / KHÓA", value: data?.die, icon: AlertTriangle, tone: "red", filter: "DIE" },
-    { label: "Lỗi / chưa check", value: data?.error, icon: Clock3, tone: "violet", filter: "ERROR" },
-    { label: "Lỗi mới", value: data?.new_problem, icon: Radio, tone: "amber", filter: "ERROR" },
+    { label: "Tổng kênh BKT", value: data?.monetized, icon: Crown, tone: "amber", filter: "ALL" },
+    { label: "Chờ JOIN", value: data?.join_pending, icon: Clock3, tone: "violet", filter: "ALL" },
+    { label: "Kênh to", value: data?.large, icon: TrendingUp, tone: "blue", filter: "ALL" },
+    { label: "Chờ duyệt lại", value: data?.review_pending, icon: Radio, tone: "amber", filter: "ALL" },
+    { label: "Loại", value: data?.rejected, icon: ShieldAlert, tone: "red", filter: "ALL" },
   ];
 
   const title = isCompanyAdmin ? "Toàn công ty" : user?.role === "LEADER" ? "Nhóm của bạn" : "Kênh của bạn";

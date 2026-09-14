@@ -23,11 +23,33 @@ import type {
   TikTokAccount,
   User,
   AppSettings,
+  ChannelCondition,
 } from "../types";
 import { formatNumber, formatTime, statusLabel } from "../utils";
 
 type Dialog = "machine" | "monetized-machine" | "edit-machine" | "accounts" | "detail" | "transfer" | "monetization" | null;
 type SortMode = "MACHINE" | "FOLLOWERS" | "DELTA";
+
+const CONDITION_OPTIONS: Array<{ value: ChannelCondition; label: string }> = [
+  { value: "ONE_STRIKE", label: "1 gậy" },
+  { value: "TWO_STRIKES", label: "2 gậy" },
+  { value: "THREE_STRIKES", label: "3 gậy" },
+  { value: "FOUR_STRIKES", label: "4 gậy" },
+  { value: "OUT_BETA_REVIEW", label: "Out Beta chờ duyệt lại" },
+  { value: "REJECTED", label: "Loại" },
+];
+
+function accountStats(accounts: TikTokAccount[]) {
+  return {
+    total: accounts.length,
+    live: accounts.filter((account) => account.status === "LIVE").length,
+    monetized: accounts.filter((account) => account.is_monetized).length,
+    joinPending: accounts.filter((account) => !account.is_monetized && account.followers != null && account.followers >= 10000 && account.followers <= 10600).length,
+    large: accounts.filter((account) => !account.is_monetized && account.followers != null && account.followers >= 7000 && account.followers <= 9999).length,
+    reviewPending: accounts.filter((account) => account.channel_condition === "OUT_BETA_REVIEW").length,
+    rejected: accounts.filter((account) => account.channel_condition === "REJECTED").length,
+  };
+}
 
 function FollowerValue({
   followers,
@@ -182,6 +204,20 @@ export function AccountsPage() {
   );
   const normalMachines = (machinesQuery.data?.machines || []).filter((machine) => machine.machine_type === "NORMAL");
   const monetizedMachines = (machinesQuery.data?.machines || []).filter((machine) => machine.machine_type === "MONETIZED");
+  const summary = accountStats(accountsQuery.data?.accounts || []);
+
+  const canEditCondition = (account: TikTokAccount) => Boolean(
+    user && (
+      isCompanyAdmin ||
+      account.owner_id === user.id ||
+      (
+        user.role === "LEADER" &&
+        usersQuery.data?.users.some(
+          (person) => person.id === account.owner_id && person.role === "MEMBER" && person.leader_id === user.id
+        )
+      )
+    )
+  );
 
   const transferUsers = useMemo(() => {
     const activeUsers = (usersQuery.data?.users || []).filter(
@@ -323,6 +359,30 @@ export function AccountsPage() {
     mutationFn: (id: string) => api(`/api/accounts/${id}`, { method: "DELETE" }),
     onSuccess: () => { notify("Đã xóa kênh", "success"); setDialog(null); void refresh(); },
     onError: (error) => notify((error as Error).message, "error"),
+  });
+
+  const updateCondition = useMutation({
+    mutationFn: ({ accountId, condition }: { accountId: string; condition: ChannelCondition | null }) =>
+      api(`/api/accounts/${accountId}/condition`, {
+        method: "PATCH",
+        body: JSON.stringify({ channel_condition: condition }),
+      }),
+    onMutate: async ({ accountId, condition }) => {
+      await queryClient.cancelQueries({ queryKey: ["accounts"] });
+      const previous = queryClient.getQueriesData<{ accounts: TikTokAccount[] }>({ queryKey: ["accounts"] });
+      queryClient.setQueriesData<{ accounts: TikTokAccount[] }>({ queryKey: ["accounts"] }, (old) => old ? {
+        accounts: old.accounts.map((account) => account.id === accountId ? { ...account, channel_condition: condition } : account),
+      } : old);
+      return { previous };
+    },
+    onError: (error, _variables, context) => {
+      context?.previous.forEach(([queryKey, data]) => queryClient.setQueryData(queryKey, data));
+      notify((error as Error).message, "error");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
   });
 
   const groups = useMemo(() => {
@@ -533,6 +593,23 @@ export function AccountsPage() {
           </div>
         </div>
 
+        <section className="account-metric-grid" aria-label="Thống kê kênh">
+          {[
+            ["Tổng kênh", summary.total, "blue"],
+            ["Đang LIVE", summary.live, "green"],
+            ["Tổng kênh BKT", summary.monetized, "amber"],
+            ["Chờ JOIN", summary.joinPending, "violet"],
+            ["Kênh to", summary.large, "blue"],
+            ["Chờ duyệt lại", summary.reviewPending, "amber"],
+            ["Loại", summary.rejected, "red"],
+          ].map(([label, value, tone]) => (
+            <div key={String(label)} className={`account-metric-card tone-${tone}`}>
+              <span>{label}</span>
+              <strong>{formatNumber(Number(value))}</strong>
+            </div>
+          ))}
+        </section>
+
         {ownerId !== "ALL" && Boolean(machinesQuery.data?.machines.length) && (
           <div className="machine-sections">
           <div className="machine-tabs">
@@ -581,7 +658,7 @@ export function AccountsPage() {
           </div>
           <div className="table-scroll">
             <table>
-              <thead><tr><th><input type="checkbox" checked={Boolean(filtered.length && filtered.every((item) => selected.has(item.id)))} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((item) => item.id)) : new Set())} /></th><th>Máy / Kênh</th><th>Tài khoản</th><th>Trạng thái</th><th>Followers</th><th>Tổng view mẫu</th><th>Lần check</th><th /></tr></thead>
+              <thead><tr><th><input type="checkbox" checked={Boolean(filtered.length && filtered.every((item) => selected.has(item.id)))} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((item) => item.id)) : new Set())} /></th><th>Máy / Kênh</th><th>Tài khoản</th><th>Trạng thái</th><th>Followers</th><th>Tổng view mẫu</th><th>Tình trạng kênh</th><th>Lần check</th><th /></tr></thead>
               <tbody>
                 {filtered.map((account) => <tr key={account.id} className={account.is_monetized ? "monetized-account-row" : ""}>
                   <td><input type="checkbox" checked={selected.has(account.id)} onChange={(e) => setSelected((old) => { const next = new Set(old); e.target.checked ? next.add(account.id) : next.delete(account.id); return next; })} /></td>
@@ -595,10 +672,25 @@ export function AccountsPage() {
                     />
                   </td>
                   <td>{formatNumber(account.total_sample_views)}</td>
+                  <td>
+                    <select
+                      className={`condition-select${account.channel_condition ? ` condition-${account.channel_condition.toLowerCase()}` : ""}`}
+                      value={account.channel_condition || ""}
+                      disabled={!canEditCondition(account) || (updateCondition.isPending && updateCondition.variables?.accountId === account.id)}
+                      onChange={(event) => updateCondition.mutate({
+                        accountId: account.id,
+                        condition: (event.target.value || null) as ChannelCondition | null,
+                      })}
+                      aria-label={`Tình trạng kênh @${account.username}`}
+                    >
+                      <option value="">Chưa đánh dấu</option>
+                      {CONDITION_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </td>
                   <td>{formatTime(account.last_checked_at)}</td>
                   <td><button className="icon-button" title="Chi tiết" onClick={() => { setDetail(account); setDialog("detail"); }}><Eye size={17} /></button></td>
                 </tr>)}
-                {!filtered.length && <tr><td colSpan={8}><div className="empty-state">Chưa có kênh phù hợp.</div></td></tr>}
+                {!filtered.length && <tr><td colSpan={9}><div className="empty-state">Chưa có kênh phù hợp.</div></td></tr>}
               </tbody>
             </table>
           </div>

@@ -151,6 +151,7 @@ class TikTokAccount(Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_monetized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     monetized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    channel_condition: Mapped[str | None] = mapped_column(Text)
     last_error_code: Mapped[str | None] = mapped_column(Text)
     last_error_message: Mapped[str | None] = mapped_column(Text)
     last_http_status: Mapped[int | None] = mapped_column(Integer)

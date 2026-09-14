@@ -1023,3 +1023,28 @@ tbody tr:hover .follower-highlight {
   font-weight: 600;
   color: #849ab1;
 }
+
+.account-metric-card {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.account-metric-card:hover {
+  border-color: #3a536c;
+  transform: translateY(-2px);
+}
+
+.account-metric-card.active {
+  border-color: currentColor;
+  box-shadow: 0 0 0 2px rgba(45, 212, 247, .08);
+}
+
+.account-metric-card small {
+  margin-top: 3px;
+  overflow: hidden;
+  font-size: .58rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

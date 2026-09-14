@@ -29,6 +29,14 @@ import { formatNumber, formatTime, statusLabel } from "../utils";
 
 type Dialog = "machine" | "monetized-machine" | "edit-machine" | "accounts" | "detail" | "transfer" | "monetization" | null;
 type SortMode = "MACHINE" | "FOLLOWERS" | "DELTA";
+type MetricFilter =
+  | "ALL"
+  | "LIVE"
+  | "MONETIZED"
+  | "JOIN_PENDING"
+  | "LARGE"
+  | "REVIEW_PENDING"
+  | "REJECTED";
 
 const CONDITION_OPTIONS: Array<{ value: ChannelCondition; label: string }> = [
   { value: "ONE_STRIKE", label: "1 gậy" },
@@ -121,6 +129,7 @@ export function AccountsPage() {
   const [sortMode, setSortMode] = useState<SortMode>("FOLLOWERS");
   const ownerId = params.get("owner") || user?.id || "";
   const status = params.get("status") || "ALL";
+  const metricFilter = (params.get("metric") as MetricFilter) || "ALL";
   const condition = params.get("condition") || "ALL";
 
   const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
@@ -284,6 +293,57 @@ export function AccountsPage() {
         ) {
           return false;
         }
+        if (
+          metricFilter === "LIVE" &&
+          account.status !== "LIVE"
+        ) {
+          return false;
+        }
+
+        if (
+          metricFilter === "MONETIZED" &&
+          !account.is_monetized
+        ) {
+          return false;
+        }
+
+        if (
+          metricFilter === "JOIN_PENDING" &&
+          (
+            account.is_monetized ||
+            account.followers == null ||
+            account.followers < 10000 ||
+            account.followers > 10600
+          )
+        ) {
+          return false;
+        }
+
+        if (
+          metricFilter === "LARGE" &&
+          (
+            account.is_monetized ||
+            account.followers == null ||
+            account.followers < 7000 ||
+            account.followers > 9999
+          )
+        ) {
+          return false;
+        }
+
+        if (
+          metricFilter === "REVIEW_PENDING" &&
+          account.channel_condition !== "OUT_BETA_REVIEW"
+        ) {
+          return false;
+        }
+
+        if (
+          metricFilter === "REJECTED" &&
+          account.channel_condition !== "REJECTED"
+        ) {
+          return false;
+        }
 
         return true;
       }
@@ -335,13 +395,29 @@ export function AccountsPage() {
       return machineOrder(first, second);
     });
   }, [
-    accountsQuery.data,
-    machineId,
-    search,
-    status,
-    condition,
-    sortMode,
-  ]);
+      accountsQuery.data,
+      machineId,
+      search,
+      status,
+      condition,
+      metricFilter,
+      sortMode,
+    ]);
+
+  function selectMetric(metric: string) {
+    const nextParams = new URLSearchParams();
+
+    nextParams.set("owner", ownerId);
+    nextParams.set("status", "ALL");
+
+    if (metric !== "ALL" && metricFilter !== metric) {
+      nextParams.set("metric", metric);
+    }
+
+    setParams(nextParams);
+    setMachineId("ALL");
+    setSelected(new Set());
+  }
 
   function selectOwner(id: string) {
     setParams({ owner: id, status: "ALL" });
@@ -602,20 +678,79 @@ export function AccountsPage() {
           </div>
         </div>
 
-        <section className="account-metric-grid" aria-label="Thống kê kênh">
+        <section
+          className="account-metric-grid"
+          aria-label="Thống kê kênh"
+        >
           {[
-            ["Tổng kênh", summary.total, "blue"],
-            ["Đang LIVE", summary.live, "green"],
-            ["Tổng kênh BKT", summary.monetized, "amber"],
-            ["Chờ JOIN", summary.joinPending, "violet"],
-            ["Kênh to", summary.large, "blue"],
-            ["Chờ duyệt lại", summary.reviewPending, "amber"],
-            ["Loại", summary.rejected, "red"],
-          ].map(([label, value, tone]) => (
-            <div key={String(label)} className={`account-metric-card tone-${tone}`}>
+            {
+              label: "Tổng kênh",
+              note: "Tất cả",
+              value: summary.total,
+              tone: "blue",
+              metric: "ALL",
+            },
+            {
+              label: "Đang LIVE",
+              note: "Kênh hoạt động",
+              value: summary.live,
+              tone: "green",
+              metric: "LIVE",
+            },
+            {
+              label: "Tổng kênh BKT",
+              note: "Đã bật kiếm tiền",
+              value: summary.monetized,
+              tone: "amber",
+              metric: "MONETIZED",
+            },
+            {
+              label: "Chờ JOIN",
+              note: "10K – 10,6K follow",
+              value: summary.joinPending,
+              tone: "violet",
+              metric: "JOIN_PENDING",
+            },
+            {
+              label: "Kênh to",
+              note: "7K – 9.999 follow",
+              value: summary.large,
+              tone: "blue",
+              metric: "LARGE",
+            },
+            {
+              label: "Chờ duyệt lại",
+              note: "Out Beta",
+              value: summary.reviewPending,
+              tone: "amber",
+              metric: "REVIEW_PENDING",
+            },
+            {
+              label: "Loại",
+              note: "Đã đánh dấu loại",
+              value: summary.rejected,
+              tone: "red",
+              metric: "REJECTED",
+            },
+          ].map(({ label, note, value, tone, metric }) => (
+            <button
+              type="button"
+              key={label}
+              className={
+                `account-metric-card tone-${tone}` +
+                (
+                  metricFilter === metric ||
+                  (metric === "ALL" && metricFilter === "ALL")
+                    ? " active"
+                    : ""
+                )
+              }
+              onClick={() => selectMetric(metric)}
+            >
               <span>{label}</span>
-              <strong>{formatNumber(Number(value))}</strong>
-            </div>
+              <strong>{formatNumber(value)}</strong>
+              <small>{note}</small>
+            </button>
           ))}
         </section>
 

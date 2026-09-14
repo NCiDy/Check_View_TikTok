@@ -41,8 +41,8 @@ def configure_database(raw_url: str | None = None) -> Engine:
 
     if url.startswith("postgresql"):
         engine_kwargs.update({
-            "pool_size": 10,
-            "max_overflow": 20,
+            "pool_size": 3,
+            "max_overflow": 2,
             "pool_timeout": 30,
             "pool_recycle": 300,
             "pool_use_lifo": True,

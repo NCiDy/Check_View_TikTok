@@ -252,7 +252,13 @@ td > strong { display: block; color: #e9f2fd; }
 td > small { max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .account-cell { display: flex; align-items: center; gap: 10px; min-width: 180px; }
 .status-badge, .role-pill, .current-pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 99px; padding: 5px 9px; font-size: .62rem; font-weight: 800; white-space: nowrap; }
-.condition-select { min-width: 142px; padding: 7px 28px 7px 9px; border-radius: 8px; font-size: .7rem; }
+.condition-select {
+  width: 161px;
+  min-width: 135px;
+  padding: 7px 25px 7px 8px;
+  border-radius: 8px;
+  font-size: .68rem;
+}
 .condition-select:disabled { cursor: not-allowed; opacity: .72; }
 .condition-one_strike, .condition-two_strikes, .condition-three_strikes, .condition-four_strikes { color: #ffc85a; border-color: rgba(255,191,63,.4); }
 .condition-out_beta_review { color: #aeb2ff; border-color: rgba(139,145,255,.4); }

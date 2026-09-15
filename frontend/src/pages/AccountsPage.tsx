@@ -464,9 +464,13 @@ export function AccountsPage() {
       context?.previous.forEach(([queryKey, data]) => queryClient.setQueryData(queryKey, data));
       notify((error as Error).message, "error");
     },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
-      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    onSuccess: () => {
+      // Dữ liệu tài khoản đã được cập nhật lạc quan; chỉ đánh dấu dashboard
+      // là cũ và để realtime gộp lượt đồng bộ, tránh gọi API trùng hai lần.
+      void queryClient.invalidateQueries({
+        queryKey: ["dashboard"],
+        refetchType: "none",
+      });
     },
   });
 

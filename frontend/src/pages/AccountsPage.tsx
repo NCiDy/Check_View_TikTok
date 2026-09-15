@@ -824,11 +824,15 @@ export function AccountsPage() {
                     <select
                       className={`condition-select${account.channel_condition ? ` condition-${account.channel_condition.toLowerCase()}` : ""}`}
                       value={account.channel_condition || ""}
-                      disabled={!canEditCondition(account) || (updateCondition.isPending && updateCondition.variables?.accountId === account.id)}
-                      onChange={(event) => updateCondition.mutate({
-                        accountId: account.id,
-                        condition: (event.target.value || null) as ChannelCondition | null,
-                      })}
+                      disabled={!canEditCondition(account) || updateCondition.isPending}
+                      aria-busy={updateCondition.isPending}
+                      onChange={(event) => {
+                        if (updateCondition.isPending) return;
+                        updateCondition.mutate({
+                          accountId: account.id,
+                          condition: (event.target.value || null) as ChannelCondition | null,
+                        });
+                      }}
                       aria-label={`Tình trạng kênh @${account.username}`}
                     >
                       <option value="">Chưa đánh dấu</option>

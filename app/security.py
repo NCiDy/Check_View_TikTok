@@ -65,18 +65,29 @@ def start_user_session(
     )
     active_sessions = list(
         db.scalars(
-            select(UserSession).where(
+            select(UserSession)
+            .where(
                 UserSession.user_id == user.id,
                 UserSession.revoked_at.is_(None),
             )
+            .order_by(UserSession.created_at.desc(), UserSession.id.desc())
         )
     )
+    
+    max_sessions = max(1, min(int(user.max_active_sessions or 1), 5))
+    
+    # Giữ lại số phiên mới nhất theo giới hạn.
+    # Chừa một slot cho phiên sắp tạo.
+    sessions_to_revoke = active_sessions[max_sessions - 1:]
+    
     revoked_ids: list[str] = []
-    for active in active_sessions:
+    
+    for active in sessions_to_revoke:
         active.revoked_at = now
-        active.revoked_reason = "SIGNED_IN_ELSEWHERE"
+        active.revoked_reason = "SESSION_LIMIT_EXCEEDED"
         revoked_ids.append(str(active.id))
-    if active_sessions:
+    
+    if sessions_to_revoke:
         db.flush()
 
     csrf_token = secrets.token_urlsafe(32)

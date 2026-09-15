@@ -119,6 +119,7 @@ def test_database_connection() -> dict:
         found_columns = {(row[0], row[1]) for row in column_rows}
     missing = sorted(required - found)
     required_columns = {
+        ("users", "max_active_sessions"),
         ("users", "is_system_owner"),
         ("users", "show_in_org_chart"),
         ("check_runs", "requested_session_id"),

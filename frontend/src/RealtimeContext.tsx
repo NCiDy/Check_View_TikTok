@@ -63,17 +63,27 @@ export function RealtimeProvider({
 
   const voiceEnabledRef = useRef(voiceEnabled);
   const refreshTimerRef = useRef<number | null>(null);
+  const refreshSourcesRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     voiceEnabledRef.current = voiceEnabled;
   }, [voiceEnabled]);
 
-  const refreshSharedData = useCallback(() => {
-    // Gộp nhiều sự kiện realtime liên tiếp thành một lần tải dữ liệu.
+  const refreshSharedData = useCallback((source = "all") => {
+    // Gộp nhiều sự kiện realtime liên tiếp và chỉ tải lại nhóm dữ liệu
+    // thực sự bị ảnh hưởng, tránh tạo một đợt request cho toàn hệ thống.
+    refreshSourcesRef.current.add(source);
     if (refreshTimerRef.current !== null) return;
 
     refreshTimerRef.current = window.setTimeout(() => {
       refreshTimerRef.current = null;
+
+      const sources = new Set(refreshSourcesRef.current);
+      refreshSourcesRef.current.clear();
+
+      const accountOnly = [...sources].every((item) =>
+        ["account_condition", "check_run"].includes(item)
+      );
 
       void queryClient.invalidateQueries({
         queryKey: ["dashboard"],
@@ -83,17 +93,19 @@ export function RealtimeProvider({
         queryKey: ["accounts"],
       });
 
-      void queryClient.invalidateQueries({
-        queryKey: ["machines"],
-      });
+      if (!accountOnly) {
+        void queryClient.invalidateQueries({
+          queryKey: ["machines"],
+        });
 
-      void queryClient.invalidateQueries({
-        queryKey: ["users"],
-      });
+        void queryClient.invalidateQueries({
+          queryKey: ["users"],
+        });
 
-      void queryClient.invalidateQueries({
-        queryKey: ["organization"],
-      });
+        void queryClient.invalidateQueries({
+          queryKey: ["organization"],
+        });
+      }
     }, 600 + Math.floor(Math.random() * 900));
   }, [queryClient]);
 
@@ -235,11 +247,11 @@ export function RealtimeProvider({
         }
 
         if (message.type === "data_updated") {
-          refreshSharedData();
+          refreshSharedData(String(data.source || "all"));
         }
 
         if (message.type === "directory_updated") {
-          refreshSharedData();
+          refreshSharedData("directory");
 
           if (data.user_id === userId) {
             void refreshMe();
@@ -248,7 +260,7 @@ export function RealtimeProvider({
 
         if (message.type === "permissions_updated") {
           void refreshMe();
-          refreshSharedData();
+          refreshSharedData("permissions");
 
           notify(
             "Quyền tài khoản vừa được cập nhật",

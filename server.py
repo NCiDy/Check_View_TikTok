@@ -19,6 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -1475,10 +1476,11 @@ async def update_account_monetization(
 
 
 @app.patch("/api/accounts/{account_id}/condition")
-async def update_account_condition(
+def update_account_condition(
     account_id: str,
     payload: ChannelConditionRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
 ):
@@ -1504,7 +1506,10 @@ async def update_account_condition(
         },
     )
     db.commit()
-    await ws_manager.broadcast(
+    # Phát realtime sau khi response đã sẵn sàng. Endpoint đồng bộ được
+    # FastAPI chạy trong thread pool nên DB chậm không chặn WebSocket.
+    background_tasks.add_task(
+        ws_manager.broadcast,
         "data_updated",
         {"source": "account_condition", "owner_id": str(owner_id)},
     )

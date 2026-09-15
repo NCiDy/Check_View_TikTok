@@ -41,11 +41,14 @@ def configure_database(raw_url: str | None = None) -> Engine:
 
     if url.startswith("postgresql"):
         engine_kwargs.update({
-            "pool_size": 3,
-            "max_overflow": 2,
+            # Keep enough headroom for concurrent page/API requests while
+            # staying safely below the Supabase Session Pooler limit.
+            "pool_size": 5,
+            "max_overflow": 3,
             "pool_timeout": 30,
-            "pool_recycle": 300,
+            "pool_recycle": 180,
             "pool_use_lifo": True,
+            "pool_reset_on_return": "rollback",
         })
 
     _engine = create_engine(url, **engine_kwargs)

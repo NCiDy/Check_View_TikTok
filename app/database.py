@@ -41,14 +41,17 @@ def configure_database(raw_url: str | None = None) -> Engine:
 
     if url.startswith("postgresql"):
         engine_kwargs.update({
-            # Match v9's proven steady capacity without allowing temporary
-            # overflow to exceed the Supabase Session Pooler limit.
-            "pool_size": 10,
+            # Keep the application pool deliberately below Supabase's shared
+            # pool limit so checker work cannot starve interactive requests.
+            "pool_size": 5,
             "max_overflow": 0,
-            "pool_timeout": 30,
-            "pool_recycle": 180,
+            "pool_timeout": 10,
+            "pool_recycle": 120,
             "pool_use_lifo": True,
             "pool_reset_on_return": "rollback",
+            # Supabase transaction pooling (port 6543) does not support
+            # prepared statements. This is also safe in session mode.
+            "connect_args": {"prepare_threshold": None},
         })
 
     _engine = create_engine(url, **engine_kwargs)

@@ -66,15 +66,17 @@ export function RealtimeProvider({
   const voiceEnabledRef = useRef(voiceEnabled);
   const refreshTimerRef = useRef<number | null>(null);
   const refreshSourcesRef = useRef<Set<string>>(new Set());
+  const refreshOwnersRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     voiceEnabledRef.current = voiceEnabled;
   }, [voiceEnabled]);
 
-  const refreshSharedData = useCallback((source = "all") => {
+  const refreshSharedData = useCallback((source = "all", ownerId = "") => {
     // Gộp nhiều sự kiện realtime liên tiếp và chỉ tải lại nhóm dữ liệu
     // thực sự bị ảnh hưởng, tránh tạo một đợt request cho toàn hệ thống.
     refreshSourcesRef.current.add(source);
+    if (ownerId) refreshOwnersRef.current.add(ownerId);
     if (refreshTimerRef.current !== null) return;
 
     refreshTimerRef.current = window.setTimeout(() => {
@@ -82,6 +84,8 @@ export function RealtimeProvider({
 
       const sources = new Set(refreshSourcesRef.current);
       refreshSourcesRef.current.clear();
+      const owners = new Set(refreshOwnersRef.current);
+      refreshOwnersRef.current.clear();
 
       const accountOnly = [...sources].every((item) =>
         ["account_condition", "check_run"].includes(item)
@@ -92,12 +96,21 @@ export function RealtimeProvider({
       });
 
       void queryClient.invalidateQueries({
-        queryKey: ["accounts"],
+        predicate: (query) => {
+          if (query.queryKey[0] !== "accounts") return false;
+          if (!owners.size) return true;
+          const viewedOwner = String(query.queryKey[1] || "");
+          return viewedOwner === "ALL" || owners.has(viewedOwner);
+        },
       });
 
       if (!accountOnly) {
         void queryClient.invalidateQueries({
-          queryKey: ["machines"],
+          predicate: (query) => {
+            if (query.queryKey[0] !== "machines") return false;
+            if (!owners.size) return true;
+            return owners.has(String(query.queryKey[1] || ""));
+          },
         });
 
         void queryClient.invalidateQueries({
@@ -107,8 +120,12 @@ export function RealtimeProvider({
         void queryClient.invalidateQueries({
           queryKey: ["organization"],
         });
+
+        void queryClient.invalidateQueries({
+          queryKey: ["departments"],
+        });
       }
-    }, 600 + Math.floor(Math.random() * 900));
+    }, 1_200 + Math.floor(Math.random() * 1_800));
   }, [queryClient]);
 
   useEffect(() => {
@@ -249,7 +266,10 @@ export function RealtimeProvider({
         }
 
         if (message.type === "data_updated") {
-          refreshSharedData(String(data.source || "all"));
+          refreshSharedData(
+            String(data.source || "all"),
+            String(data.owner_id || "")
+          );
         }
 
         if (message.type === "directory_updated") {

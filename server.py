@@ -454,22 +454,12 @@ class DepartmentUpdateRequest(BaseModel):
     leader_collaboration_enabled: bool
 
 
-def serialize_user(db: Session, user: User) -> dict[str, Any]:
-    machine_count = db.scalar(select(func.count()).select_from(Machine).where(Machine.owner_id == user.id)) or 0
-    account_count = db.scalar(
-        select(func.count()).select_from(TikTokAccount)
-        .join(Machine, Machine.id == TikTokAccount.machine_id)
-        .where(Machine.owner_id == user.id)
-    ) or 0
-    active_session = db.scalar(
-        select(UserSession)
-        .where(
-            UserSession.user_id == user.id,
-            UserSession.revoked_at.is_(None),
-            UserSession.expires_at > utcnow(),
-        )
-        .order_by(UserSession.last_seen_at.desc())
-    )
+def _serialize_user(
+    user: User,
+    machine_count: int = 0,
+    account_count: int = 0,
+    active_session: UserSession | None = None,
+) -> dict[str, Any]:
     return {
         "id": str(user.id),
         "username": user.username,
@@ -497,10 +487,52 @@ def serialize_user(db: Session, user: User) -> dict[str, Any]:
     }
 
 
-def serialize_machine(db: Session, machine: Machine) -> dict[str, Any]:
-    account_count = db.scalar(
-        select(func.count()).select_from(TikTokAccount).where(TikTokAccount.machine_id == machine.id)
-    ) or 0
+def serialize_users(db: Session, users: list[User]) -> list[dict[str, Any]]:
+    if not users:
+        return []
+
+    user_ids = [user.id for user in users]
+    machine_counts = dict(db.execute(
+        select(Machine.owner_id, func.count(Machine.id))
+        .where(Machine.owner_id.in_(user_ids))
+        .group_by(Machine.owner_id)
+    ).all())
+    account_counts = dict(db.execute(
+        select(Machine.owner_id, func.count(TikTokAccount.id))
+        .join(TikTokAccount, TikTokAccount.machine_id == Machine.id)
+        .where(Machine.owner_id.in_(user_ids))
+        .group_by(Machine.owner_id)
+    ).all())
+
+    active_sessions: dict[uuid.UUID, UserSession] = {}
+    session_rows = db.scalars(
+        select(UserSession)
+        .where(
+            UserSession.user_id.in_(user_ids),
+            UserSession.revoked_at.is_(None),
+            UserSession.expires_at > utcnow(),
+        )
+        .order_by(UserSession.user_id, UserSession.last_seen_at.desc())
+    )
+    for session in session_rows:
+        active_sessions.setdefault(session.user_id, session)
+
+    return [
+        _serialize_user(
+            user,
+            int(machine_counts.get(user.id, 0)),
+            int(account_counts.get(user.id, 0)),
+            active_sessions.get(user.id),
+        )
+        for user in users
+    ]
+
+
+def serialize_user(db: Session, user: User) -> dict[str, Any]:
+    return serialize_users(db, [user])[0]
+
+
+def _serialize_machine(machine: Machine, account_count: int = 0) -> dict[str, Any]:
     return {
         "id": str(machine.id),
         "owner_id": str(machine.owner_id),
@@ -510,6 +542,25 @@ def serialize_machine(db: Session, machine: Machine) -> dict[str, Any]:
         "account_count": int(account_count),
         "created_at": iso(machine.created_at),
     }
+
+
+def serialize_machines(db: Session, machines: list[Machine]) -> list[dict[str, Any]]:
+    if not machines:
+        return []
+    machine_ids = [machine.id for machine in machines]
+    counts = dict(db.execute(
+        select(TikTokAccount.machine_id, func.count(TikTokAccount.id))
+        .where(TikTokAccount.machine_id.in_(machine_ids))
+        .group_by(TikTokAccount.machine_id)
+    ).all())
+    return [
+        _serialize_machine(machine, int(counts.get(machine.id, 0)))
+        for machine in machines
+    ]
+
+
+def serialize_machine(db: Session, machine: Machine) -> dict[str, Any]:
+    return serialize_machines(db, [machine])[0]
 
 
 def serialize_account(account: TikTokAccount, machine: Machine, owner: User) -> dict[str, Any]:
@@ -732,7 +783,7 @@ async def login(payload: LoginRequest, request: Request, db: Session = Depends(g
     login_limiter.success(key)
     return {
         "success": True,
-        "user": serialize_user(db, user),
+        "user": _serialize_user(user, active_session=user_session),
         "session_id": str(user_session.id),
         "csrf_token": csrf_token,
     }
@@ -759,7 +810,7 @@ def me(
     current_session: UserSession = Depends(get_current_session),
 ):
     return {
-        "user": serialize_user(db, current),
+        "user": _serialize_user(current, active_session=current_session),
         "session_id": str(current_session.id),
         "csrf_token": request.session.get("csrf_token"),
     }
@@ -808,13 +859,7 @@ def list_users(
 
     users = list(db.scalars(query))
 
-    return {
-        "users": [
-            serialize_user(db, user)
-            for user in users
-            if not user.is_technical_account
-        ]
-    }
+    return {"users": serialize_users(db, users)}
 
 
 @app.post("/api/users")
@@ -1112,10 +1157,10 @@ def list_machines(
 ):
     owner_uuid = parse_uuid(owner_id, "Owner ID")
     ensure_can_view_user(db, current, owner_uuid)
-    machines = db.scalars(
+    machines = list(db.scalars(
         select(Machine).where(Machine.owner_id == owner_uuid).order_by(Machine.machine_number)
-    )
-    return {"machines": [serialize_machine(db, machine) for machine in machines]}
+    ))
+    return {"machines": serialize_machines(db, machines)}
 
 
 @app.post("/api/machines")
@@ -1520,20 +1565,48 @@ def update_account_condition(
 def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     owner_ids = visible_owner_ids(db, current)
     rows = db.execute(
-        select(TikTokAccount, Machine, User)
+        select(
+            TikTokAccount.status,
+            TikTokAccount.previous_status,
+            TikTokAccount.followers,
+            TikTokAccount.is_monetized,
+            TikTokAccount.channel_condition,
+            TikTokAccount.last_checked_at,
+        )
         .join(Machine, Machine.id == TikTokAccount.machine_id)
-        .join(User, User.id == Machine.owner_id)
         .where(Machine.owner_id.in_(owner_ids))
     ).all() if owner_ids else []
-    accounts = [row[0] for row in rows]
-    # Bảng kênh bứt phá luôn lấy dữ liệu toàn công ty.
+
+    follower_delta = TikTokAccount.followers - TikTokAccount.previous_followers
     company_rows = db.execute(
-        select(TikTokAccount, Machine, User)
+        select(
+            TikTokAccount.id.label("account_id"),
+            Machine.owner_id,
+            TikTokAccount.username,
+            User.full_name.label("owner_name"),
+            Machine.machine_number,
+            TikTokAccount.slot_number,
+            TikTokAccount.previous_followers.label("before"),
+            TikTokAccount.followers.label("after"),
+            follower_delta.label("delta"),
+            TikTokAccount.last_checked_at.label("checked_at"),
+        )
         .join(Machine, Machine.id == TikTokAccount.machine_id)
         .join(User, User.id == Machine.owner_id)
-        .where(User.is_active.is_(True))
+        .where(
+            User.is_active.is_(True),
+            TikTokAccount.followers.is_not(None),
+            TikTokAccount.previous_followers.is_not(None),
+            follower_delta > 0,
+        )
+        .order_by(follower_delta.desc())
+        .limit(5)
     ).all()
-    last_checked = max((a.last_checked_at for a in accounts if a.last_checked_at), default=None)
+
+    last_checked = max(
+        (row.last_checked_at for row in rows if row.last_checked_at),
+        default=None,
+    )
 
     recent_changes = []
     breakthrough_channels = []
@@ -1546,33 +1619,27 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
         "remaining": 0,
     }
 
-    for account, machine, owner in rows:
-        if account.channel_condition == "REJECTED":
+    for row in rows:
+        if row.channel_condition == "REJECTED":
             composition["rejected"] += 1
-        elif account.channel_condition == "OUT_BETA_REVIEW":
+        elif row.channel_condition == "OUT_BETA_REVIEW":
             composition["review_pending"] += 1
-        elif account.is_monetized:
+        elif row.is_monetized:
             composition["monetized"] += 1
-        elif account.followers is not None and 10000 <= account.followers <= 10600:
+        elif row.followers is not None and 10000 <= row.followers <= 10600:
             composition["join_pending"] += 1
-        elif account.followers is not None and 7000 <= account.followers <= 9999:
+        elif row.followers is not None and 7000 <= row.followers <= 9999:
             composition["large"] += 1
         else:
             composition["remaining"] += 1
-    for account, machine, owner in company_rows:
-        if account.followers is None or account.previous_followers is None:
-            continue
 
-        follower_delta = account.followers - account.previous_followers
-        if follower_delta <= 0:
-            continue
-
+    for row in company_rows:
         can_see_username = (
             current.role in {"BOSS", "MANAGER"}
-            or owner.id == current.id
+            or row.owner_id == current.id
         )
 
-        username = account.username or ""
+        username = row.username or ""
         if can_see_username:
             displayed_username = username
         elif len(username) <= 6:
@@ -1589,42 +1656,43 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
             )
 
         breakthrough_channels.append({
-            "account_id": str(account.id),
-            "owner_id": str(owner.id),
+            "account_id": str(row.account_id),
+            "owner_id": str(row.owner_id),
             "username": displayed_username,
-            "owner_name": owner.full_name,
-            "machine_number": machine.machine_number,
-            "slot_number": account.slot_number,
-            "before": account.previous_followers,
-            "after": account.followers,
-            "delta": follower_delta,
-            "checked_at": iso(account.last_checked_at),
+            "owner_name": row.owner_name,
+            "machine_number": row.machine_number,
+            "slot_number": row.slot_number,
+            "before": row.before,
+            "after": row.after,
+            "delta": row.delta,
+            "checked_at": iso(row.checked_at),
             "can_open": can_see_username,
         })
-    recent_changes.sort(key=lambda item: item["checked_at"] or "", reverse=True)
-    breakthrough_channels.sort(key=lambda item: item["delta"], reverse=True)
 
     return {
-        "total": len(accounts),
-        "live": sum(a.status == "LIVE" for a in accounts),
-        "monetized": sum(a.is_monetized for a in accounts),
+        "total": len(rows),
+        "live": sum(row.status == "LIVE" for row in rows),
+        "monetized": sum(row.is_monetized for row in rows),
         "join_pending": sum(
-            not a.is_monetized and a.followers is not None and 10000 <= a.followers <= 10600
-            for a in accounts
+            not row.is_monetized and row.followers is not None and 10000 <= row.followers <= 10600
+            for row in rows
         ),
         "large": sum(
-            not a.is_monetized and a.followers is not None and 7000 <= a.followers <= 9999
-            for a in accounts
+            not row.is_monetized and row.followers is not None and 7000 <= row.followers <= 9999
+            for row in rows
         ),
-        "review_pending": sum(a.channel_condition == "OUT_BETA_REVIEW" for a in accounts),
-        "rejected": sum(a.channel_condition == "REJECTED" for a in accounts),
-        "die": sum(a.status == "DIE" for a in accounts),
-        "error": sum(a.status in {"ERROR", "UNCHECKED"} for a in accounts),
-        "unchecked": sum(a.status == "UNCHECKED" for a in accounts),
-        "new_problem": sum(a.previous_status == "LIVE" and a.status in {"DIE", "ERROR"} for a in accounts),
+        "review_pending": sum(row.channel_condition == "OUT_BETA_REVIEW" for row in rows),
+        "rejected": sum(row.channel_condition == "REJECTED" for row in rows),
+        "die": sum(row.status == "DIE" for row in rows),
+        "error": sum(row.status in {"ERROR", "UNCHECKED"} for row in rows),
+        "unchecked": sum(row.status == "UNCHECKED" for row in rows),
+        "new_problem": sum(
+            row.previous_status == "LIVE" and row.status in {"DIE", "ERROR"}
+            for row in rows
+        ),
         "last_checked_at": iso(last_checked),
         "recent_changes": recent_changes[:30],
-        "breakthrough_channels": breakthrough_channels[:5],
+        "breakthrough_channels": breakthrough_channels,
         "composition": composition,
     }
 
@@ -1685,6 +1753,32 @@ async def update_department(
             "leader_collaboration_enabled":
                 department.leader_collaboration_enabled,
         }
+    }
+
+
+@app.get("/api/departments")
+def list_departments(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    rows = db.scalars(
+        select(Department)
+        .where(Department.is_active.is_(True))
+        .order_by(Department.name)
+    )
+    return {
+        "departments": [
+            {
+                "id": str(item.id),
+                "name": item.name,
+                "leader_collaboration_enabled": (
+                    item.leader_collaboration_enabled
+                    if current.role in {"BOSS", "MANAGER", "LEADER"}
+                    else False
+                ),
+            }
+            for item in rows
+        ]
     }
 
 @app.get("/api/search")
@@ -1932,10 +2026,7 @@ def organization(
         ]
 
     return {
-        "users": [
-            serialize_user(db, user)
-            for user in users
-        ],
+        "users": serialize_users(db, users),
         "departments": departments,
     }
 

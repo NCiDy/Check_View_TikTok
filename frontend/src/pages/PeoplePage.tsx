@@ -23,16 +23,15 @@ export function PeoplePage() {
   const { data } = useQuery({ queryKey: ["users"], queryFn: () => api<{ users: User[] }>("/api/users") });
   const users = data?.users || [];
 
-  const organizationQuery = useQuery({
-    queryKey: ["organization"],
+  const departmentsQuery = useQuery({
+    queryKey: ["departments"],
     queryFn: () =>
       api<{
-        users: User[];
         departments: Department[];
-      }>("/api/organization"),
+      }>("/api/departments"),
   });
 
-  const departments = organizationQuery.data?.departments || [];
+  const departments = departmentsQuery.data?.departments || [];
 
   const updateDepartment = useMutation({
     mutationFn: ({
@@ -53,7 +52,7 @@ export function PeoplePage() {
       notify("Đã cập nhật quyền hợp tác của phòng", "success");
 
       await queryClient.invalidateQueries({
-        queryKey: ["organization"],
+        queryKey: ["departments"],
       });
 
       await queryClient.invalidateQueries({
@@ -68,9 +67,7 @@ export function PeoplePage() {
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: ["users"] });
     await queryClient.invalidateQueries({ queryKey: ["organization"] });
-    await queryClient.invalidateQueries({
-      queryKey: ["organization"],
-    });
+    await queryClient.invalidateQueries({ queryKey: ["departments"] });
   }
 
   async function uploadAvatar(target: User, file?: File) {

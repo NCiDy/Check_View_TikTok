@@ -134,17 +134,16 @@ export function AccountsPage() {
 
   const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: () => api<{ users: User[] }>("/api/users") });
-  const organizationQuery = useQuery({
-    queryKey: ["organization"],
+  const departmentsQuery = useQuery({
+    queryKey: ["departments"],
     queryFn: () =>
       api<{
-        users: User[];
         departments: Department[];
-      }>("/api/organization"),
+      }>("/api/departments"),
   });
 
   const departments =
-    organizationQuery.data?.departments || [];
+    departmentsQuery.data?.departments || [];
   const machinesQuery = useQuery({
     queryKey: ["machines", ownerId],
     queryFn: () => api<{ machines: Machine[] }>(`/api/machines?owner_id=${encodeURIComponent(ownerId)}`),

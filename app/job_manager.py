@@ -21,6 +21,8 @@ from .models import AppSettings, CheckRun, Machine, TikTokAccount, User
 
 
 RETRYABLE_STATUSES = {"TIMEOUT", "HTTP_ERROR", "PARSE_ERROR", "EXCEPTION"}
+MAX_CHECK_WORKERS = 5
+MAX_WORKERS_PER_JOB = 3
 
 
 @dataclass
@@ -58,11 +60,12 @@ class JobManager:
         except Exception:
             pass
         self.executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, min(worker_count, 50)),
+            # Reserve database and CPU capacity for interactive web requests.
+            max_workers=max(1, min(worker_count, MAX_CHECK_WORKERS)),
             thread_name_prefix="tiktok-check",
         )
         self.job_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(2, min(worker_count * 2, 20)),
+            max_workers=max(2, min(worker_count * 2, 10)),
             thread_name_prefix="tiktok-job",
         )
         self._registry_lock = threading.Lock()
@@ -509,7 +512,10 @@ class JobManager:
 
             queue = deque(account_ids)
             pending: dict[concurrent.futures.Future, tuple[uuid.UUID, InflightCheck]] = {}
-            per_job = max(1, runtime["max_workers_per_job"])
+            per_job = max(
+                1,
+                min(runtime["max_workers_per_job"], MAX_WORKERS_PER_JOB),
+            )
 
             while (queue or pending) and not stop_event.is_set():
                 while queue and len(pending) < per_job and not stop_event.is_set():

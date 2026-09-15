@@ -7,7 +7,15 @@ import { AuthProvider } from "./AuthContext";
 import { RealtimeProvider } from "./RealtimeContext";
 import "./styles.css";
 
-const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 15_000, refetchOnWindowFocus: true, retry: 1 } } });
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+});
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode><QueryClientProvider client={queryClient}><AuthProvider><BrowserRouter><RealtimeProvider><App /></RealtimeProvider></BrowserRouter></AuthProvider></QueryClientProvider></React.StrictMode>,

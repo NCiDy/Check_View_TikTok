@@ -1526,6 +1526,13 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
         .where(Machine.owner_id.in_(owner_ids))
     ).all() if owner_ids else []
     accounts = [row[0] for row in rows]
+    # Bảng kênh bứt phá luôn lấy dữ liệu toàn công ty.
+    company_rows = db.execute(
+        select(TikTokAccount, Machine, User)
+        .join(Machine, Machine.id == TikTokAccount.machine_id)
+        .join(User, User.id == Machine.owner_id)
+        .where(User.is_active.is_(True))
+    ).all()
     last_checked = max((a.last_checked_at for a in accounts if a.last_checked_at), default=None)
 
     recent_changes = []
@@ -1540,38 +1547,6 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
     }
 
     for account, machine, owner in rows:
-        if account.auto_followers is not None and account.previous_auto_followers is not None:
-            auto_delta = account.auto_followers - account.previous_auto_followers
-            if auto_delta:
-                recent_changes.append({
-                    "account_id": str(account.id),
-                    "owner_id": str(owner.id),
-                    "username": account.username,
-                    "owner_name": owner.full_name,
-                    "machine_number": machine.machine_number,
-                    "slot_number": account.slot_number,
-                    "before": account.previous_auto_followers,
-                    "after": account.auto_followers,
-                    "delta": auto_delta,
-                    "checked_at": iso(account.auto_checked_at),
-                })
-
-        if account.followers is not None and account.previous_followers is not None:
-            follower_delta = account.followers - account.previous_followers
-            if follower_delta > 0:
-                breakthrough_channels.append({
-                    "account_id": str(account.id),
-                    "owner_id": str(owner.id),
-                    "username": account.username,
-                    "owner_name": owner.full_name,
-                    "machine_number": machine.machine_number,
-                    "slot_number": account.slot_number,
-                    "before": account.previous_followers,
-                    "after": account.followers,
-                    "delta": follower_delta,
-                    "checked_at": iso(account.last_checked_at),
-                })
-
         if account.channel_condition == "REJECTED":
             composition["rejected"] += 1
         elif account.channel_condition == "OUT_BETA_REVIEW":
@@ -1584,7 +1559,48 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
             composition["large"] += 1
         else:
             composition["remaining"] += 1
+    for account, machine, owner in company_rows:
+        if account.followers is None or account.previous_followers is None:
+            continue
 
+        follower_delta = account.followers - account.previous_followers
+        if follower_delta <= 0:
+            continue
+
+        can_see_username = (
+            current.role in {"BOSS", "MANAGER"}
+            or owner.id == current.id
+        )
+
+        username = account.username or ""
+        if can_see_username:
+            displayed_username = username
+        elif len(username) <= 6:
+            displayed_username = (
+                username[0]
+                + "*" * max(len(username) - 2, 3)
+                + username[-1]
+            )
+        else:
+            displayed_username = (
+                username[:3]
+                + "*" * max(len(username) - 6, 3)
+                + username[-3:]
+            )
+
+        breakthrough_channels.append({
+            "account_id": str(account.id),
+            "owner_id": str(owner.id),
+            "username": displayed_username,
+            "owner_name": owner.full_name,
+            "machine_number": machine.machine_number,
+            "slot_number": account.slot_number,
+            "before": account.previous_followers,
+            "after": account.followers,
+            "delta": follower_delta,
+            "checked_at": iso(account.last_checked_at),
+            "can_open": can_see_username,
+        })
     recent_changes.sort(key=lambda item: item["checked_at"] or "", reverse=True)
     breakthrough_channels.sort(key=lambda item: item["delta"], reverse=True)
 
@@ -2001,6 +2017,32 @@ def list_audit_logs(
         })
     return {"logs": result}
 
+
+@app.post("/api/system/announce-update")
+async def announce_client_update(
+    current: User = Depends(csrf_protect),
+):
+    if (
+        current.username_normalized != "system"
+        or not current.is_technical_account
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ tài khoản system được gửi thông báo cập nhật",
+        )
+
+    await ws_manager.broadcast(
+        "client_update_required",
+        {
+            "message": "Web vừa có bản cập nhật mới. Vui lòng tải lại trang.",
+            "announced_at": iso(utcnow()),
+        },
+    )
+
+    return {
+        "success": True,
+        "message": "Đã gửi thông báo cập nhật đến mọi người",
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

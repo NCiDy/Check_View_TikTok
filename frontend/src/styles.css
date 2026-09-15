@@ -1171,3 +1171,67 @@ tbody tr:hover .follower-highlight {
   .composition-content { grid-template-columns: 1fr; }
   .donut-chart { width: 205px; }
 }
+
+.update-button {
+  color: #f8d57e;
+  border-color: rgba(212, 175, 55, 0.35);
+  background: rgba(212, 175, 55, 0.08);
+}
+
+.update-button:hover {
+  color: #ffe49a;
+  background: rgba(212, 175, 55, 0.14);
+}
+
+.update-notice-overlay {
+  position: fixed;
+  z-index: 9999;
+  inset: 0;
+  padding: 20px;
+  display: grid;
+  place-items: center;
+  background: rgba(3, 10, 19, 0.78);
+  backdrop-filter: blur(5px);
+}
+
+.update-notice-card {
+  width: min(480px, 100%);
+  padding: 22px;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 15px;
+  color: #eaf5ff;
+  background: #0f1d2e;
+  border: 1px solid rgba(45, 212, 247, 0.4);
+  border-radius: 17px;
+  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.5);
+}
+
+.update-notice-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  color: #07111f;
+  background: linear-gradient(135deg, #29d5ed, #4594ff);
+  border-radius: 14px;
+}
+
+.update-notice-card strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.update-notice-card p {
+  margin: 0;
+  color: #91a7bf;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.update-notice-card .button {
+  grid-column: 1 / -1;
+  width: 100%;
+  justify-content: center;
+}

@@ -14,6 +14,7 @@ import type { CheckRun } from "./types";
 
 interface RealtimeState {
   connected: boolean;
+  updateRequired: boolean;
   currentRun: CheckRun | null;
   setCurrentRun: (run: CheckRun | null) => void;
   voiceEnabled: boolean;
@@ -54,6 +55,7 @@ export function RealtimeProvider({
   const queryClient = useQueryClient();
 
   const [connected, setConnected] = useState(false);
+  const [updateRequired, setUpdateRequired] = useState(false);
   const [currentRun, setCurrentRun] =
     useState<CheckRun | null>(null);
 
@@ -273,6 +275,9 @@ export function RealtimeProvider({
             queryKey: ["settings"],
           });
         }
+        if (message.type === "client_update_required") {
+          setUpdateRequired(true);
+        }
 
         if (message.type === "session_revoked") {
           disposed = true;
@@ -387,12 +392,14 @@ export function RealtimeProvider({
       setCurrentRun,
       voiceEnabled,
       toggleVoice,
+      updateRequired,
     }),
     [
       connected,
       currentRun,
       voiceEnabled,
       toggleVoice,
+      updateRequired,
     ]
   );
 

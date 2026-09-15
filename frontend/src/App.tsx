@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Building2, ClipboardList, KeyRound, LayoutDashboard, LogOut, Menu, Network, Search, Settings2, Shield, Users, Volume2, VolumeX, X } from "lucide-react";
+import { Activity, Building2, ClipboardList, KeyRound, LayoutDashboard, LogOut, Menu, Network, RefreshCw, Search, Settings2, Shield, Users, Volume2, VolumeX, X } from "lucide-react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, notify } from "./api";
 import { useAuth } from "./AuthContext";
@@ -27,7 +27,13 @@ export default function App() {
 
 function AuthenticatedApp() {
   const { user, logout, refreshMe } = useAuth();
-  const { connected, setCurrentRun, voiceEnabled, toggleVoice } = useRealtime();
+  const {
+    connected,
+    setCurrentRun,
+    voiceEnabled,
+    toggleVoice,
+    updateRequired,
+  } = useRealtime();
   const queryClient = useQueryClient();
   const location = useLocation();
   const navigate = useNavigate();
@@ -39,6 +45,7 @@ function AuthenticatedApp() {
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
   const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
+  const isSystemAccount = user?.username.toLowerCase() === "system" && user?.is_technical_account;
 
   const nav = [
     { to: "/", label: "Tổng quan", icon: LayoutDashboard, end: true },
@@ -58,6 +65,27 @@ function AuthenticatedApp() {
     try { await api(`/api/users/${user.id}/avatar`, { method: "POST", body }); await refreshMe(); await queryClient.invalidateQueries({ queryKey: ["users"] }); notify("Đã đổi ảnh đại diện", "success"); } catch (error) { notify((error as Error).message, "error"); }
   }
 
+  async function announceUpdate() {
+    const confirmed = window.confirm(
+      "Gửi thông báo yêu cầu tải lại trang đến tất cả mọi người đang online?"
+    );
+
+    if (!confirmed) return;
+
+    try {
+      const result = await api<{
+        success: boolean;
+        message: string;
+      }>("/api/system/announce-update", {
+        method: "POST",
+      });
+
+      notify(result.message, "success");
+    } catch (error) {
+      notify((error as Error).message, "error");
+    }
+  }
+
   return <div className="app-shell">
     <aside className={`sidebar ${mobileOpen ? "open" : ""}`}>
       <div className="sidebar-brand"><span className="brand-mark">TT</span><div><strong>BEATOK Manager</strong><small>Company Workspace</small></div><button className="mobile-close" onClick={() => setMobileOpen(false)}><X size={20} /></button></div>
@@ -66,12 +94,45 @@ function AuthenticatedApp() {
     </aside>
     {mobileOpen && <button className="mobile-overlay" onClick={() => setMobileOpen(false)} />}
     <div className="main-column">
-      <header className="topbar"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={21} /></button><div className="topbar-context"><Building2 size={18} /><span>Không gian công ty</span></div><div className="topbar-actions">{isCompanyAdmin && <button className="topbar-button" onClick={() => setSearchOpen(true)}><Search size={17} /><span>Tìm toàn công ty</span></button>}<button className="topbar-button" onClick={toggleVoice}>{voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}<span>{voiceEnabled ? "Đang bật loa" : "Bật loa"}</span></button><label className="profile-button" title="Bấm để đổi ảnh"><Avatar name={user!.full_name} url={user!.avatar_url} size="sm" /><span><strong>{user!.full_name}</strong><small>{user!.role}{user!.is_system_owner ? " · Chính" : ""}</small></span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => void uploadOwnAvatar(e.target.files?.[0])} /></label><button className="icon-button" title="Đổi mật khẩu" onClick={() => setPasswordOpen(true)}><KeyRound size={18} /></button><button className="icon-button logout-icon" title="Đăng xuất" onClick={() => void logout()}><LogOut size={18} /></button></div></header>
+      <header className="topbar"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={21} /></button><div className="topbar-context"><Building2 size={18} /><span>Không gian công ty</span></div><div className="topbar-actions">{isCompanyAdmin && <button className="topbar-button" onClick={() => setSearchOpen(true)}><Search size={17} /><span>Tìm toàn công ty</span></button>}{isSystemAccount && (
+        <button
+          className="topbar-button update-button"
+          onClick={() => void announceUpdate()}
+          title="Thông báo mọi người tải lại web"
+        >
+          <RefreshCw size={17} />
+          <span>Thông báo cập nhật</span>
+        </button>
+      )}<button className="topbar-button" onClick={toggleVoice}>{voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}<span>{voiceEnabled ? "Đang bật loa" : "Bật loa"}</span></button><label className="profile-button" title="Bấm để đổi ảnh"><Avatar name={user!.full_name} url={user!.avatar_url} size="sm" /><span><strong>{user!.full_name}</strong><small>{user!.role}{user!.is_system_owner ? " · Chính" : ""}</small></span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => void uploadOwnAvatar(e.target.files?.[0])} /></label><button className="icon-button" title="Đổi mật khẩu" onClick={() => setPasswordOpen(true)}><KeyRound size={18} /></button><button className="icon-button logout-icon" title="Đăng xuất" onClick={() => void logout()}><LogOut size={18} /></button></div></header>
       <JobPanel />
       <main className="content"><Routes><Route path="/" element={<DashboardPage />} /><Route path="/accounts" element={<AccountsPage />} /><Route path="/organization" element={<OrganizationPage />} /><Route path="/sessions" element={<SessionsPage />} />{isCompanyAdmin && <><Route path="/people" element={<PeoplePage />} /><Route path="/audit" element={<AuditPage />} /><Route path="/settings" element={<SettingsPage />} /></>}<Route path="*" element={<Navigate to="/" replace />} /></Routes></main>
     </div>
     {searchOpen && <SearchDialog onClose={() => setSearchOpen(false)} onOpenOwner={(id) => { setSearchOpen(false); navigate(`/accounts?owner=${id}`); }} />}
     {passwordOpen && <PasswordDialog onClose={() => setPasswordOpen(false)} />}
+    {updateRequired && (
+      <div className="update-notice-overlay">
+        <div className="update-notice-card">
+          <div className="update-notice-icon">
+            <RefreshCw size={25} />
+          </div>
+
+          <div>
+            <strong>Web vừa có bản cập nhật mới</strong>
+            <p>
+              Vui lòng tải lại trang để sử dụng giao diện và chức năng mới nhất.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="button primary"
+            onClick={() => window.location.reload()}
+          >
+            Tải lại ngay
+          </button>
+        </div>
+      </div>
+    )}
   </div>;
 }
 

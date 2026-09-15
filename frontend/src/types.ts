@@ -127,6 +127,7 @@ export interface Dashboard {
     after: number;
     delta: number;
     checked_at?: string | null;
+    can_open: boolean;
   }>;
   composition: {
     monetized: number;

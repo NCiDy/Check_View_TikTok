@@ -103,7 +103,7 @@ export function DashboardPage() {
           <div className="analytics-heading">
             <div>
               <p className="eyebrow">KÊNH BỨT PHÁ</p>
-              <h2>Top 5 kênh tăng follow</h2>
+              <h2>Top 5 kênh tăng follow(Toàn Công Ty)</h2>
               <small>So với lần check gần nhất · {formatTime(data?.last_checked_at)}</small>
             </div>
             {standoutOwner && (
@@ -116,7 +116,12 @@ export function DashboardPage() {
               <button
                 key={item.account_id}
                 className="breakthrough-row"
-                onClick={() => navigate(`/accounts?owner=${item.owner_id}&status=ALL`)}
+                onClick={() => {
+                  if (item.can_open) {
+                    navigate(`/accounts?owner=${item.owner_id}&status=ALL`);
+                  }
+                }}
+                disabled={!item.can_open}
               >
                 <span className={`breakthrough-rank rank-${index + 1}`}>{index + 1}</span>
                 <span className="breakthrough-account">

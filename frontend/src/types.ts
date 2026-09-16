@@ -197,6 +197,8 @@ export interface AuditLog {
   id: number;
   actor_user_id?: string | null;
   actor_name: string;
+  actor_username?: string | null;
+  actor_is_technical?: boolean;
   action: string;
   entity_type: string;
   entity_id?: string | null;

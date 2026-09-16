@@ -2091,14 +2091,20 @@ def list_audit_logs(
     _boss: User = Depends(require_roles("BOSS", "MANAGER")),
 ):
     safe_limit = max(1, min(limit, 200))
-    rows = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(safe_limit))
+    rows = db.execute(
+        select(AuditLog, User)
+        .outerjoin(User, User.id == AuditLog.actor_user_id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(safe_limit)
+    ).all()
     result = []
-    for row in rows:
-        actor = db.get(User, row.actor_user_id) if row.actor_user_id else None
+    for row, actor in rows:
         result.append({
             "id": row.id,
             "actor_user_id": str(row.actor_user_id) if row.actor_user_id else None,
             "actor_name": actor.full_name if actor else "Hệ thống",
+            "actor_username": actor.username_normalized if actor else None,
+            "actor_is_technical": bool(actor and actor.is_technical_account),
             "action": row.action,
             "entity_type": row.entity_type,
             "entity_id": row.entity_id,
@@ -2111,6 +2117,8 @@ def list_audit_logs(
 
 @app.post("/api/system/announce-update")
 async def announce_client_update(
+    request: Request,
+    db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
 ):
     if (
@@ -2121,6 +2129,16 @@ async def announce_client_update(
             status_code=403,
             detail="Chỉ tài khoản system được gửi thông báo cập nhật",
         )
+
+    write_audit(
+        db,
+        request,
+        current,
+        "SYSTEM_UPDATE_ANNOUNCED",
+        "SYSTEM",
+        "CLIENT_UPDATE",
+    )
+    db.commit()
 
     await ws_manager.broadcast(
         "client_update_required",

@@ -33,6 +33,7 @@ function AuthenticatedApp() {
     voiceEnabled,
     toggleVoice,
     updateRequired,
+    updateMessage,
   } = useRealtime();
   const queryClient = useQueryClient();
   const location = useLocation();
@@ -40,6 +41,7 @@ function AuthenticatedApp() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [announcementOpen, setAnnouncementOpen] = useState(false);
   const { data: runs } = useQuery({ queryKey: ["current-run"], queryFn: () => api<{ runs: CheckRun[] }>("/api/check-runs/current") });
   useEffect(() => { if (runs?.runs[0]) setCurrentRun(runs.runs[0]); }, [runs, setCurrentRun]);
   useEffect(() => setMobileOpen(false), [location.pathname]);
@@ -65,25 +67,12 @@ function AuthenticatedApp() {
     try { await api(`/api/users/${user.id}/avatar`, { method: "POST", body }); await refreshMe(); await queryClient.invalidateQueries({ queryKey: ["users"] }); notify("Đã đổi ảnh đại diện", "success"); } catch (error) { notify((error as Error).message, "error"); }
   }
 
-  async function announceUpdate() {
-    const confirmed = window.confirm(
-      "Gửi thông báo yêu cầu tải lại trang đến tất cả mọi người đang online?"
-    );
-
-    if (!confirmed) return;
-
+  async function announceUpdate(message: string) {
     try {
-      const result = await api<{
-        success: boolean;
-        message: string;
-      }>("/api/system/announce-update", {
-        method: "POST",
-      });
-
+      const result = await api<{ success: boolean; message: string }>("/api/system/announce-update", { method: "POST", body: JSON.stringify({ message }) });
       notify(result.message, "success");
-    } catch (error) {
-      notify((error as Error).message, "error");
-    }
+      setAnnouncementOpen(false);
+    } catch (error) { notify((error as Error).message, "error"); }
   }
 
   return <div className="app-shell">
@@ -97,7 +86,7 @@ function AuthenticatedApp() {
       <header className="topbar"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={21} /></button><div className="topbar-context"><Building2 size={18} /><span>Không gian công ty</span></div><div className="topbar-actions">{isCompanyAdmin && <button className="topbar-button" onClick={() => setSearchOpen(true)}><Search size={17} /><span>Tìm toàn công ty</span></button>}{isSystemAccount && (
         <button
           className="topbar-button update-button"
-          onClick={() => void announceUpdate()}
+          onClick={() => setAnnouncementOpen(true)}
           title="Thông báo mọi người tải lại web"
         >
           <RefreshCw size={17} />
@@ -109,6 +98,7 @@ function AuthenticatedApp() {
     </div>
     {searchOpen && <SearchDialog onClose={() => setSearchOpen(false)} onOpenOwner={(id) => { setSearchOpen(false); navigate(`/accounts?owner=${id}`); }} />}
     {passwordOpen && <PasswordDialog onClose={() => setPasswordOpen(false)} />}
+    {announcementOpen && <UpdateAnnouncementDialog onClose={() => setAnnouncementOpen(false)} onSend={announceUpdate} />}
     {updateRequired && (
       <div className="update-notice-overlay">
         <div className="update-notice-card">
@@ -121,6 +111,7 @@ function AuthenticatedApp() {
             <p>
               Vui lòng tải lại trang để sử dụng giao diện và chức năng mới nhất.
             </p>
+            {updateMessage && <p>{updateMessage}</p>}
           </div>
 
           <button
@@ -134,6 +125,12 @@ function AuthenticatedApp() {
       </div>
     )}
   </div>;
+}
+
+
+function UpdateAnnouncementDialog({ onClose, onSend }: { onClose: () => void; onSend: (message: string) => Promise<void> }) {
+  const [message, setMessage] = useState(""); const [sending, setSending] = useState(false);
+  return <Modal title="Thông báo cập nhật hệ thống" onClose={onClose}><form className="form-stack" onSubmit={async (event) => { event.preventDefault(); setSending(true); try { await onSend(message.trim()); } finally { setSending(false); } }}><p>Thông báo sẽ gửi đến tất cả người đang online. Họ tự chọn tải lại trang khi sẵn sàng.</p><label>Lời nhắn kèm theo (không bắt buộc)<textarea rows={4} maxLength={500} value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Ví dụ: Web sẽ cập nhật chức năng mới trong ít phút." autoFocus /></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose} disabled={sending}>Hủy</button><button className="button primary" disabled={sending}>{sending ? "Đang gửi…" : "Gửi thông báo"}</button></div></form></Modal>;
 }
 
 function SearchDialog({ onClose, onOpenOwner }: { onClose: () => void; onOpenOwner: (id: string) => void }) {

@@ -4,6 +4,7 @@ import {
   ArrowRightLeft,
   Crown,
   Eye,
+  LockKeyhole,
   Pencil,
   Plus,
   Search,
@@ -27,7 +28,7 @@ import type {
 } from "../types";
 import { formatNumber, formatTime, statusLabel } from "../utils";
 
-type Dialog = "machine" | "monetized-machine" | "edit-machine" | "accounts" | "detail" | "transfer" | "monetization" | null;
+type Dialog = "machine" | "monetized-machine" | "edit-machine" | "accounts" | "detail" | "transfer" | "monetization" | "totp" | null;
 type SortMode = "MACHINE" | "FOLLOWERS" | "DELTA";
 type MetricFilter =
   | "ALL"
@@ -805,7 +806,7 @@ export function AccountsPage() {
           </div>
           <div className="table-scroll">
             <table>
-              <thead><tr><th><input type="checkbox" checked={Boolean(filtered.length && filtered.every((item) => selected.has(item.id)))} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((item) => item.id)) : new Set())} /></th><th>Máy / Kênh</th><th>Tài khoản</th><th>Trạng thái</th><th>Followers</th><th>Tổng view mẫu</th><th>Tình trạng kênh</th><th>Lần check</th><th /></tr></thead>
+              <thead><tr><th><input type="checkbox" checked={Boolean(filtered.length && filtered.every((item) => selected.has(item.id)))} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((item) => item.id)) : new Set())} /></th><th>Máy / Kênh</th><th>Tài khoản</th><th>Trạng thái</th><th>Followers</th><th>Tổng view mẫu</th><th>Tình trạng kênh</th><th>Lần check</th><th>2FA</th><th /></tr></thead>
               <tbody>
                 {filtered.map((account) => <tr key={account.id} className={account.is_monetized ? "monetized-account-row" : ""}>
                   <td><input type="checkbox" checked={selected.has(account.id)} onChange={(e) => setSelected((old) => { const next = new Set(old); e.target.checked ? next.add(account.id) : next.delete(account.id); return next; })} /></td>
@@ -839,9 +840,10 @@ export function AccountsPage() {
                     </select>
                   </td>
                   <td>{formatTime(account.last_checked_at)}</td>
+                  <td><button className="icon-button" title={account.has_totp ? "Lấy mã 2FA" : "Thiết lập 2FA"} disabled={!canEditCondition(account)} onClick={() => { setDetail(account); setDialog("totp"); }}><LockKeyhole size={16} /></button></td>
                   <td><button className="icon-button" title="Chi tiết" onClick={() => { setDetail(account); setDialog("detail"); }}><Eye size={17} /></button></td>
                 </tr>)}
-                {!filtered.length && <tr><td colSpan={9}><div className="empty-state">Chưa có kênh phù hợp.</div></td></tr>}
+                {!filtered.length && <tr><td colSpan={10}><div className="empty-state">Chưa có kênh phù hợp.</div></td></tr>}
               </tbody>
             </table>
           </div>
@@ -1006,6 +1008,7 @@ export function AccountsPage() {
           </div>
         </Modal>
       )}
+      {dialog === "totp" && detail && <TotpDialog account={detail} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void refresh(); }} />}
       {dialog === "transfer" && detail && <TransferDialog account={detail} users={transferUsers} onClose={() => setDialog("detail")} onSaved={() => { setDialog(null); void refresh(); }} />}
       {dialog === "monetization" && detail && <MonetizationDialog account={detail} users={transferUsers} onClose={() => setDialog("detail")} onSaved={() => { setDialog(null); void refresh(); }} />}
       {dialog === "machine" && owner && <MachineDialog owner={owner} machineType="NORMAL" onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void refresh(); }} />}
@@ -1013,6 +1016,14 @@ export function AccountsPage() {
       {dialog === "edit-machine" && editingMachine && <EditMachineDialog machine={editingMachine} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); setEditingMachine(null); void refresh(); }} />}
     </div>
   );
+}
+
+
+function TotpDialog({ account, onClose, onSaved }: { account: TikTokAccount; onClose: () => void; onSaved: () => void }) {
+  const [secret, setSecret] = useState(""); const [code, setCode] = useState(""); const [expiresIn, setExpiresIn] = useState<number | null>(null); const [loading, setLoading] = useState(false);
+  async function loadCode() { setLoading(true); try { const result = await api<{ code: string; expires_in: number }>(`/api/accounts/${account.id}/totp`); setCode(result.code); setExpiresIn(result.expires_in); } catch (error) { notify((error as Error).message, "error"); } finally { setLoading(false); } }
+  if (!account.has_totp) return <Modal title={`Thiết lập 2FA · @${account.username}`} onClose={onClose}><form className="form-stack" onSubmit={async (event) => { event.preventDefault(); setLoading(true); try { await api(`/api/accounts/${account.id}/totp`, { method: "PUT", body: JSON.stringify({ secret }) }); notify("Đã lưu thiết lập 2FA", "success"); onSaved(); } catch (error) { notify((error as Error).message, "error"); } finally { setLoading(false); } }}><p>Secret chỉ được mã hóa trên máy chủ và không hiển thị lại sau khi lưu.</p><label>Secret 2FA<input value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="Dán secret hoặc otpauth://…" required autoFocus /></label><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Hủy</button><button className="button primary" disabled={loading}>{loading ? "Đang lưu…" : "Lưu thiết lập"}</button></div></form></Modal>;
+  return <Modal title={`Mã 2FA · @${account.username}`} onClose={onClose}><div className="form-stack"><p>Secret không được hiển thị. Mã chỉ tạo khi bạn bấm lấy mã.</p>{code && <label>Mã đang dùng<input value={code} readOnly onFocus={(event) => event.currentTarget.select()} /></label>}{expiresIn !== null && <small>Mã còn hiệu lực khoảng {expiresIn} giây.</small>}<div className="modal-actions"><button type="button" className="button secondary" onClick={() => void loadCode()} disabled={loading}>{loading ? "Đang lấy…" : "Lấy mã 6 số"}</button><button type="button" className="button danger" onClick={async () => { if (!window.confirm(`Xóa thiết lập 2FA của @${account.username}?`)) return; setLoading(true); try { await api(`/api/accounts/${account.id}/totp`, { method: "DELETE" }); notify("Đã xóa thiết lập 2FA", "success"); onSaved(); } catch (error) { notify((error as Error).message, "error"); } finally { setLoading(false); } }} disabled={loading}>Xóa 2FA</button><button type="button" className="button primary" onClick={onClose}>Đóng</button></div></div></Modal>;
 }
 
 function MachineDialog({ owner, machineType, onClose, onSaved }: { owner: User; machineType: "NORMAL" | "MONETIZED"; onClose: () => void; onSaved: () => void }) {

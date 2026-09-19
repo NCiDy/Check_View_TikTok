@@ -159,6 +159,7 @@ class TikTokAccount(Base):
     monetized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     channel_condition: Mapped[str | None] = mapped_column(Text)
     last_error_code: Mapped[str | None] = mapped_column(Text)
+    totp_secret_encrypted: Mapped[str | None] = mapped_column(Text)
     last_error_message: Mapped[str | None] = mapped_column(Text)
     last_http_status: Mapped[int | None] = mapped_column(Integer)
     dead_confirmation_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)

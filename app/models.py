@@ -245,6 +245,10 @@ class AppSettings(Base):
     monetization_follower_threshold: Mapped[int] = mapped_column(BigInteger, nullable=False, default=10500)
     in_app_notifications_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     voice_notifications_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    totp_time_restriction_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    totp_restricted_roles: Mapped[str] = mapped_column(Text, nullable=False, default="MEMBER")
+    totp_access_start_minutes: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=480)
+    totp_access_end_minutes: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1080)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )

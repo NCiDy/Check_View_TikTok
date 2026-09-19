@@ -15,6 +15,7 @@ import type { CheckRun } from "./types";
 interface RealtimeState {
   connected: boolean;
   updateRequired: boolean;
+  updateMessage: string | null;
   currentRun: CheckRun | null;
   setCurrentRun: (run: CheckRun | null) => void;
   voiceEnabled: boolean;
@@ -56,6 +57,7 @@ export function RealtimeProvider({
 
   const [connected, setConnected] = useState(false);
   const [updateRequired, setUpdateRequired] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [currentRun, setCurrentRun] =
     useState<CheckRun | null>(null);
 
@@ -296,6 +298,8 @@ export function RealtimeProvider({
           });
         }
         if (message.type === "client_update_required") {
+          const customMessage = String(data.custom_message || "").trim();
+          setUpdateMessage(customMessage || null);
           setUpdateRequired(true);
         }
 
@@ -413,6 +417,7 @@ export function RealtimeProvider({
       voiceEnabled,
       toggleVoice,
       updateRequired,
+      updateMessage,
     }),
     [
       connected,
@@ -420,6 +425,7 @@ export function RealtimeProvider({
       voiceEnabled,
       toggleVoice,
       updateRequired,
+      updateMessage,
     ]
   );
 

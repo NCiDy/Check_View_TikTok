@@ -111,8 +111,16 @@ function AuthenticatedApp() {
             <p>
               Vui lòng tải lại trang để sử dụng giao diện và chức năng mới nhất.
             </p>
-            {updateMessage && <p>{updateMessage}</p>}
           </div>
+          {updateMessage && (
+            <div className="update-notice-message">
+              <span aria-hidden="true">📣</span>
+              <div>
+                <strong>Lời nhắn từ quản trị viên</strong>
+                <p>{updateMessage}</p>
+              </div>
+            </div>
+          )}
 
           <button
             type="button"

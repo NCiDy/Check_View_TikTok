@@ -175,6 +175,10 @@ export interface AppSettings {
   retry_count?: number;
   dead_confirmation_attempts?: number;
   in_app_notifications_enabled?: boolean;
+  totp_time_restriction_enabled?: boolean;
+  totp_restricted_roles?: "MEMBER" | "MEMBER_AND_LEADER";
+  totp_access_start_minutes?: number;
+  totp_access_end_minutes?: number;
 }
 
 export interface LoginSession {

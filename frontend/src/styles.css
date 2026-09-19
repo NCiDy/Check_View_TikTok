@@ -1323,6 +1323,11 @@ tbody tr:hover .follower-highlight {
 .totp-restriction-settings small { color: #a8bfd4; }
 .totp-restriction-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
+.totp-restriction-grid > label {
+  display: grid;
+  gap: 12px;
+}
+
 .toggle-switch {
   display: inline-flex;
   align-items: center;

@@ -1235,3 +1235,38 @@ tbody tr:hover .follower-highlight {
   width: 100%;
   justify-content: center;
 }
+
+.update-notice-message {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  color: #ffedb3;
+  background: linear-gradient(90deg, rgba(251, 191, 36, 0.18), rgba(251, 191, 36, 0.06));
+  border: 1px solid rgba(251, 191, 36, 0.48);
+  border-radius: 11px;
+}
+
+.update-notice-message > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  font-size: 1rem;
+  background: rgba(251, 191, 36, 0.16);
+  border-radius: 8px;
+}
+
+.update-notice-message strong {
+  margin-bottom: 2px;
+  color: #ffe58d;
+  font-size: 0.78rem;
+}
+
+.update-notice-message p {
+  color: #f8edc5;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}

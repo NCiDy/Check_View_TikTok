@@ -81,6 +81,7 @@ export interface TikTokAccount {
   last_error_message?: string | null;
   last_checked_at?: string | null;
   last_successful_checked_at?: string | null;
+  has_totp: boolean;
 }
 
 export type ChannelCondition =

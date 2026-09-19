@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from io import BytesIO
 import json
+import hashlib
+import hmac
 import logging
 import os
 import secrets
@@ -17,6 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import (
     BackgroundTasks,
@@ -33,6 +37,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image, UnidentifiedImageError
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import delete, and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -79,6 +84,41 @@ REACT_DIST_DIR = STATIC_DIR / "react"
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+
+
+def _get_totp_cipher() -> Fernet:
+    key = os.getenv("TOTP_ENCRYPTION_KEY", "").strip()
+    if not key:
+        raise HTTPException(status_code=503, detail="Máy chủ chưa cấu hình TOTP_ENCRYPTION_KEY")
+    try:
+        return Fernet(key.encode("utf-8"))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=503, detail="TOTP_ENCRYPTION_KEY không hợp lệ") from exc
+
+
+def normalize_totp_secret(value: str) -> str:
+    raw = value.strip()
+    if raw.lower().startswith("otpauth://"):
+        raw = (parse_qs(urlparse(raw).query).get("secret") or [""])[0]
+    secret = raw.replace(" ", "").replace("-", "").upper()
+    try:
+        base64.b32decode(secret + "=" * (-len(secret) % 8), casefold=True)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Secret 2FA không đúng định dạng") from exc
+    if len(secret) < 16:
+        raise HTTPException(status_code=422, detail="Secret 2FA quá ngắn")
+    return secret
+
+
+def make_totp_code(secret: str) -> tuple[str, int]:
+    now = int(time.time())
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8), casefold=True)
+    digest = hmac.new(key, (now // 30).to_bytes(8, "big"), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = (int.from_bytes(digest[offset:offset + 4], "big") & 0x7FFFFFFF) % 1_000_000
+    return f"{code:06d}", 30 - (now % 30)
 
 
 def parse_uuid(value: str, field_name: str = "ID") -> uuid.UUID:
@@ -426,6 +466,14 @@ class ChannelConditionRequest(BaseModel):
     ] | None = None
 
 
+class TotpSecretRequest(BaseModel):
+    secret: str = Field(min_length=16, max_length=512)
+
+
+class SystemUpdateAnnouncementRequest(BaseModel):
+    message: str | None = Field(default=None, max_length=500)
+
+
 class CheckStartRequest(BaseModel):
     scope_type: Literal["SELECTED", "USER", "LEADER_GROUP", "COMPANY"]
     target_user_id: str | None = None
@@ -609,6 +657,7 @@ def serialize_account(account: TikTokAccount, machine: Machine, owner: User) -> 
         "auto_status": account.auto_status,
         "previous_auto_status": account.previous_auto_status,
         "auto_checked_at": iso(account.auto_checked_at),
+        "has_totp": bool(account.totp_secret_encrypted),
         "created_at": iso(account.created_at),
     }
 
@@ -1520,6 +1569,43 @@ async def update_account_monetization(
     return {"success": True}
 
 
+@app.put("/api/accounts/{account_id}/totp")
+def configure_account_totp(account_id: str, payload: TotpSecretRequest, request: Request, db: Session = Depends(get_db), current: User = Depends(csrf_protect)):
+    account = db.get(TikTokAccount, parse_uuid(account_id, "Account ID"))
+    if account is None: raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
+    owner_id = machine_owner(db, account.machine_id)
+    ensure_can_transfer_account(db, current, owner_id, owner_id)
+    account.totp_secret_encrypted = _get_totp_cipher().encrypt(normalize_totp_secret(payload.secret).encode()).decode()
+    write_audit(db, request, current, "ACCOUNT_TOTP_CONFIGURED", "TIKTOK_ACCOUNT", account.id, {"owner_id": str(owner_id)})
+    db.commit()
+    return {"success": True, "message": "Đã lưu thiết lập 2FA an toàn"}
+
+
+@app.get("/api/accounts/{account_id}/totp")
+def get_account_totp_code(account_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    account = db.get(TikTokAccount, parse_uuid(account_id, "Account ID"))
+    if account is None: raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
+    owner_id = machine_owner(db, account.machine_id)
+    ensure_can_transfer_account(db, current, owner_id, owner_id)
+    if not account.totp_secret_encrypted: raise HTTPException(status_code=404, detail="Kênh này chưa thiết lập 2FA")
+    try: secret = _get_totp_cipher().decrypt(account.totp_secret_encrypted.encode()).decode()
+    except InvalidToken as exc: raise HTTPException(status_code=500, detail="Không thể đọc secret 2FA đã lưu") from exc
+    code, expires_in = make_totp_code(secret)
+    return {"code": code, "expires_in": expires_in}
+
+
+@app.delete("/api/accounts/{account_id}/totp")
+def clear_account_totp(account_id: str, request: Request, db: Session = Depends(get_db), current: User = Depends(csrf_protect)):
+    account = db.get(TikTokAccount, parse_uuid(account_id, "Account ID"))
+    if account is None: raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
+    owner_id = machine_owner(db, account.machine_id)
+    ensure_can_transfer_account(db, current, owner_id, owner_id)
+    account.totp_secret_encrypted = None
+    write_audit(db, request, current, "ACCOUNT_TOTP_REMOVED", "TIKTOK_ACCOUNT", account.id, {"owner_id": str(owner_id)})
+    db.commit()
+    return {"success": True}
+
+
 @app.patch("/api/accounts/{account_id}/condition")
 def update_account_condition(
     account_id: str,
@@ -2117,6 +2203,7 @@ def list_audit_logs(
 
 @app.post("/api/system/announce-update")
 async def announce_client_update(
+    payload: SystemUpdateAnnouncementRequest,
     request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
@@ -2137,6 +2224,7 @@ async def announce_client_update(
         "SYSTEM_UPDATE_ANNOUNCED",
         "SYSTEM",
         "CLIENT_UPDATE",
+        {"has_custom_message": bool(payload.message and payload.message.strip())},
     )
     db.commit()
 
@@ -2145,6 +2233,7 @@ async def announce_client_update(
         {
             "message": "Web vừa có bản cập nhật mới. Vui lòng tải lại trang.",
             "announced_at": iso(utcnow()),
+            "custom_message": (payload.message or "").strip() or None,
         },
     )
 

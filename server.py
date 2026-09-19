@@ -2057,7 +2057,7 @@ def get_settings(db: Session = Depends(get_db), current: User = Depends(get_curr
             "dead_confirmation_attempts": row.dead_confirmation_attempts,
             "in_app_notifications_enabled": row.in_app_notifications_enabled,
         })
-    if is_system_technical_account(current):
+    if current.role in {"BOSS", "MANAGER"}:
         public.update({
             "totp_time_restriction_enabled": row.totp_time_restriction_enabled,
             "totp_restricted_roles": row.totp_restricted_roles,
@@ -2085,8 +2085,8 @@ async def update_settings(
         "totp_access_start_minutes",
         "totp_access_end_minutes",
     }
-    if totp_schedule_fields.intersection(values) and not is_system_technical_account(boss):
-        raise HTTPException(status_code=403, detail="Chỉ tài khoản system được cập nhật giới hạn 2FA")
+    if totp_schedule_fields.intersection(values) and boss.role not in {"BOSS", "MANAGER"}:
+        raise HTTPException(status_code=403, detail="Chỉ BOSS hoặc MANAGER được cập nhật giới hạn 2FA")
     next_start = int(values.get("totp_access_start_minutes", row.totp_access_start_minutes))
     next_end = int(values.get("totp_access_end_minutes", row.totp_access_end_minutes))
     if next_start == next_end:

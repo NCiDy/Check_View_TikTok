@@ -1321,7 +1321,10 @@ tbody tr:hover .follower-highlight {
 .totp-restriction-heading h2 { margin: 0 0 4px; }
 .totp-restriction-heading .eyebrow { color: var(--amber) !important; }
 .totp-restriction-settings small { color: #a8bfd4; }
-.totp-restriction-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.totp-restriction-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 10px;
+}
 
 .totp-restriction-grid > label {
   display: grid;
@@ -1387,4 +1390,9 @@ tbody tr:hover .follower-highlight {
   .totp-restriction-grid { grid-template-columns: 1fr; }
   .totp-restriction-heading, .totp-restriction-footer { align-items: flex-start; flex-direction: column; }
   .totp-restriction-footer .button { width: 100%; }
+}
+
+.totp-restriction-grid > label {
+  display: grid;
+  gap: 12px;
 }

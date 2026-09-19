@@ -17,6 +17,7 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
@@ -80,6 +81,7 @@ logging.basicConfig(
 logger = logging.getLogger("tiktok-manager")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 REACT_DIST_DIR = STATIC_DIR / "react"
+VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def utcnow() -> datetime:
@@ -119,6 +121,30 @@ def make_totp_code(secret: str) -> tuple[str, int]:
     offset = digest[-1] & 0x0F
     code = (int.from_bytes(digest[offset:offset + 4], "big") & 0x7FFFFFFF) % 1_000_000
     return f"{code:06d}", 30 - (now % 30)
+
+
+
+
+def is_system_technical_account(user: User) -> bool:
+    return user.username_normalized == "system" and user.is_technical_account
+
+
+def ensure_totp_access_allowed(db: Session, current: User) -> None:
+    if current.role not in {"MEMBER", "LEADER"}:
+        return
+    settings_row = db.get(AppSettings, 1)
+    if settings_row is None or not settings_row.totp_time_restriction_enabled:
+        return
+    restricted = current.role == "MEMBER" or settings_row.totp_restricted_roles == "MEMBER_AND_LEADER"
+    if not restricted:
+        return
+    start = settings_row.totp_access_start_minutes
+    end = settings_row.totp_access_end_minutes
+    vietnam_now = utcnow().astimezone(VIETNAM_TZ)
+    current_minute = vietnam_now.hour * 60 + vietnam_now.minute
+    allowed = start <= current_minute < end if start < end else current_minute >= start or current_minute < end
+    if not allowed:
+        raise HTTPException(status_code=403, detail=f"Chức năng 2FA chỉ dùng từ {start // 60:02d}:{start % 60:02d} đến {end // 60:02d}:{end % 60:02d} theo giờ Việt Nam")
 
 
 def parse_uuid(value: str, field_name: str = "ID") -> uuid.UUID:
@@ -493,6 +519,10 @@ class SettingsUpdateRequest(BaseModel):
     monetization_follower_threshold: int | None = Field(default=None, ge=1, le=1000000000)
     in_app_notifications_enabled: bool | None = None
     voice_notifications_enabled: bool | None = None
+    totp_time_restriction_enabled: bool | None = None
+    totp_restricted_roles: Literal["MEMBER", "MEMBER_AND_LEADER"] | None = None
+    totp_access_start_minutes: int | None = Field(default=None, ge=0, le=1439)
+    totp_access_end_minutes: int | None = Field(default=None, ge=0, le=1439)
 
 
 class SessionRevokeRequest(BaseModel):
@@ -1575,6 +1605,7 @@ def configure_account_totp(account_id: str, payload: TotpSecretRequest, request:
     if account is None: raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
     owner_id = machine_owner(db, account.machine_id)
     ensure_can_transfer_account(db, current, owner_id, owner_id)
+    ensure_totp_access_allowed(db, current)
     account.totp_secret_encrypted = _get_totp_cipher().encrypt(normalize_totp_secret(payload.secret).encode()).decode()
     write_audit(db, request, current, "ACCOUNT_TOTP_CONFIGURED", "TIKTOK_ACCOUNT", account.id, {"owner_id": str(owner_id)})
     db.commit()
@@ -1587,6 +1618,7 @@ def get_account_totp_code(account_id: str, db: Session = Depends(get_db), curren
     if account is None: raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
     owner_id = machine_owner(db, account.machine_id)
     ensure_can_transfer_account(db, current, owner_id, owner_id)
+    ensure_totp_access_allowed(db, current)
     if not account.totp_secret_encrypted: raise HTTPException(status_code=404, detail="Kênh này chưa thiết lập 2FA")
     try: secret = _get_totp_cipher().decrypt(account.totp_secret_encrypted.encode()).decode()
     except InvalidToken as exc: raise HTTPException(status_code=500, detail="Không thể đọc secret 2FA đã lưu") from exc
@@ -1600,6 +1632,7 @@ def clear_account_totp(account_id: str, request: Request, db: Session = Depends(
     if account is None: raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
     owner_id = machine_owner(db, account.machine_id)
     ensure_can_transfer_account(db, current, owner_id, owner_id)
+    ensure_totp_access_allowed(db, current)
     account.totp_secret_encrypted = None
     write_audit(db, request, current, "ACCOUNT_TOTP_REMOVED", "TIKTOK_ACCOUNT", account.id, {"owner_id": str(owner_id)})
     db.commit()
@@ -2024,6 +2057,13 @@ def get_settings(db: Session = Depends(get_db), current: User = Depends(get_curr
             "dead_confirmation_attempts": row.dead_confirmation_attempts,
             "in_app_notifications_enabled": row.in_app_notifications_enabled,
         })
+    if is_system_technical_account(current):
+        public.update({
+            "totp_time_restriction_enabled": row.totp_time_restriction_enabled,
+            "totp_restricted_roles": row.totp_restricted_roles,
+            "totp_access_start_minutes": row.totp_access_start_minutes,
+            "totp_access_end_minutes": row.totp_access_end_minutes,
+        })
     return {"settings": public}
 
 
@@ -2039,6 +2079,18 @@ async def update_settings(
     if row is None:
         raise HTTPException(status_code=500, detail="Thiếu app_settings")
     values = payload.model_dump(exclude_unset=True)
+    totp_schedule_fields = {
+        "totp_time_restriction_enabled",
+        "totp_restricted_roles",
+        "totp_access_start_minutes",
+        "totp_access_end_minutes",
+    }
+    if totp_schedule_fields.intersection(values) and not is_system_technical_account(boss):
+        raise HTTPException(status_code=403, detail="Chỉ tài khoản system được cập nhật giới hạn 2FA")
+    next_start = int(values.get("totp_access_start_minutes", row.totp_access_start_minutes))
+    next_end = int(values.get("totp_access_end_minutes", row.totp_access_end_minutes))
+    if next_start == next_end:
+        raise HTTPException(status_code=422, detail="Giờ bắt đầu và kết thúc 2FA không được trùng nhau")
     new_total = int(values.get("max_total_workers", row.max_total_workers))
     new_per_job = int(values.get("max_workers_per_job", row.max_workers_per_job))
     if new_per_job > new_total:

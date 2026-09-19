@@ -1301,3 +1301,26 @@ tbody tr:hover .follower-highlight {
   letter-spacing: 0.3em;
   line-height: 1;
 }
+
+.totp-restriction-settings {
+  display: grid;
+  gap: 13px;
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-radius: 13px;
+  background: rgba(251, 191, 36, 0.045);
+}
+
+.totp-restriction-settings > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.totp-restriction-settings small { color: #a8bfd4; }
+.totp-restriction-enabled { font-weight: 700; }
+.totp-restriction-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+@media (max-width: 760px) {
+  .totp-restriction-grid { grid-template-columns: 1fr; }
+}

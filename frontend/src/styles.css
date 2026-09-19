@@ -1304,23 +1304,82 @@ tbody tr:hover .follower-highlight {
 
 .totp-restriction-settings {
   display: grid;
-  gap: 13px;
-  margin-top: 20px;
-  padding: 16px;
-  border: 1px solid rgba(251, 191, 36, 0.28);
-  border-radius: 13px;
-  background: rgba(251, 191, 36, 0.045);
+  gap: 18px;
+  padding: 22px;
+  border-color: rgba(251, 191, 36, .3);
+  background: linear-gradient(135deg, rgba(251, 191, 36, .08), rgba(14, 28, 45, .88) 42%);
 }
 
-.totp-restriction-settings > div:first-child {
-  display: grid;
-  gap: 4px;
+.totp-restriction-heading,
+.totp-restriction-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
 }
 
+.totp-restriction-heading h2 { margin: 0 0 4px; }
+.totp-restriction-heading .eyebrow { color: var(--amber) !important; }
 .totp-restriction-settings small { color: #a8bfd4; }
-.totp-restriction-enabled { font-weight: 700; }
 .totp-restriction-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+  cursor: pointer;
+  font-weight: 800;
+  font-size: .78rem;
+  color: #9eb4c9;
+}
+
+.toggle-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-track {
+  position: relative;
+  width: 48px;
+  height: 27px;
+  border: 1px solid #3a4a5e;
+  border-radius: 999px;
+  background: #18283a;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .28);
+  transition: .2s ease;
+}
+
+.toggle-track::after {
+  content: "";
+  position: absolute;
+  width: 19px;
+  height: 19px;
+  top: 3px;
+  left: 3px;
+  border-radius: 50%;
+  background: #d5e1ed;
+  box-shadow: 0 2px 5px rgba(0,0,0,.35);
+  transition: .2s ease;
+}
+
+.toggle-switch input:checked + .toggle-track {
+  border-color: #16bade;
+  background: linear-gradient(135deg, #26cde9, #398fff);
+  box-shadow: 0 0 15px rgba(45, 212, 247, .25);
+}
+
+.toggle-switch input:checked + .toggle-track::after {
+  transform: translateX(21px);
+  background: #fff;
+}
+
+.toggle-switch input:focus-visible + .toggle-track { outline: 2px solid #b9efff; outline-offset: 3px; }
+.toggle-switch input:checked ~ .toggle-label { color: #55e2fa; }
 
 @media (max-width: 760px) {
   .totp-restriction-grid { grid-template-columns: 1fr; }
+  .totp-restriction-heading, .totp-restriction-footer { align-items: flex-start; flex-direction: column; }
+  .totp-restriction-footer .button { width: 100%; }
 }

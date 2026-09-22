@@ -55,7 +55,44 @@ small { display: block; color: var(--muted); font-size: .73rem; line-height: 1.4
 .avatar-lg { width: 60px; height: 60px; border-radius: 17px; font-size: 1rem; }
 
 .boot-screen { min-height: 100vh; display: grid; place-content: center; justify-items: center; gap: 15px; color: var(--muted); }
-.login-page { min-height: 100vh; display: grid; grid-template-columns: 1.1fr .9fr; padding: clamp(20px, 5vw, 80px); gap: clamp(40px, 8vw, 120px); align-items: center; max-width: 1400px; margin: auto; }
+.login-page {
+  min-height: 100vh;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  padding: clamp(20px, 5vw, 80px);
+  gap: clamp(40px, 8vw, 120px);
+  align-items: center;
+
+  /* Cố định vùng nội dung ở giữa màn hình */
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.login-page-with-background {
+  min-height: 100vh;
+  width: 100%;
+  position: relative;
+
+  background-color: #07111f;
+  background-size: 100% 100%;
+  background-position: center center;
+  background-repeat: no-repeat;
+
+  overflow: hidden;
+}
+
+.login-page-with-background .login-card {
+  position: absolute;
+
+  top: 50%;
+  right: clamp(70px, 10vw, 180px);
+
+  transform: translateY(-50%);
+
+  width: min(100%, 470px);
+}
+
 .login-brand { max-width: 620px; }
 .login-brand h1 { font-size: clamp(2.5rem, 6vw, 5.7rem); line-height: .98; margin: 25px 0; }
 .login-brand > p:not(.eyebrow) { color: #9eb0c5; max-width: 570px; line-height: 1.8; }
@@ -365,7 +402,9 @@ textarea { resize: vertical; line-height: 1.55; }
   font-size: 0.68rem;
   line-height: 1.45;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden; 
 }
 
 .recent-video-info a {
@@ -713,6 +752,13 @@ textarea { resize: vertical; line-height: 1.55; }
   .accounts-layout { grid-template-columns: 1fr; }.people-rail { position: static; max-height: 280px; }
   .login-page { grid-template-columns: 1fr; }.login-brand { display: none; }.login-card { justify-self: center; }
   .profile-button { min-width: 0; }.profile-button > span:not(.avatar) { display: none; }
+  .login-page-with-background .login-card {
+    position: absolute;
+    top: 50%;
+    right: 50%;
+    transform: translate(50%, -50%);
+    width: min(90%, 470px);
+  }
 }
 @media (max-width: 680px) {
   .content { padding-top: 22px; }

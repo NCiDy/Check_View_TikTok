@@ -3,7 +3,7 @@ import { Activity, LockKeyhole, UserRound } from "lucide-react";
 import { useAuth } from "../AuthContext";
 
 const LOGIN_BACKGROUND_URL =
-  "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/18263102-f463-4197-b70b-e2289476899a.png";
+  "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/nenmoi1.png";
 
 export function LoginPage() {
   const { login, signedOutReason } = useAuth();

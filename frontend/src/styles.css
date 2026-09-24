@@ -1732,3 +1732,30 @@ tbody tr:hover .follower-highlight {
     justify-self: start;
   }
 }
+
+
+/* Full-bleed service view on desktop */
+.content.service-content {
+  height: calc(100vh - 73px);
+  padding: 0;
+  overflow: hidden;
+}
+
+.content.service-content .services-page,
+.content.service-content .services-content {
+  height: 100%;
+  min-height: 0;
+}
+
+@media (max-width: 800px) {
+  .content.service-content {
+    height: auto;
+    overflow: visible;
+  }
+
+  .content.service-content .services-page,
+  .content.service-content .services-content {
+    height: auto;
+    min-height: calc(100vh - 73px);
+  }
+}

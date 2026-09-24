@@ -55,7 +55,6 @@ function AuthenticatedApp() {
   const nav = [
     { to: "/", label: "Tổng quan", icon: LayoutDashboard, end: true },
     { to: "/accounts", label: "Kênh TikTok", icon: Activity },
-    { to: "/services", label: "Dịch vụ của Đức", icon: Sparkles, isNew: true },
     { to: "/organization", label: "Tổ chức nhân sự", icon: Network },
     ...(isCompanyAdmin ? [
       { to: "/people", label: "Quản lý nhân sự", icon: Users },
@@ -63,6 +62,7 @@ function AuthenticatedApp() {
       { to: "/settings", label: "Cấu hình", icon: Settings2 },
     ] : []),
     { to: "/sessions", label: "Phiên đăng nhập", icon: Shield },
+    { to: "/services", label: "Dịch vụ của Đức", icon: Sparkles, isNew: true },
   ];
 
   async function uploadOwnAvatar(file?: File) {

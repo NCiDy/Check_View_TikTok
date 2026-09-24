@@ -1,4 +1,4 @@
-import { ArrowRight, BadgeCheck, Clock3, MessageCircle, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, MessageCircle, Sparkles } from "lucide-react";
 
 const SERVICE_BACKGROUND_URL =
   "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/nenmoi1.png";
@@ -11,24 +11,7 @@ export function ServicesPage() {
       className="services-page"
       style={{ backgroundImage: `url("${SERVICE_BACKGROUND_URL}")` }}
     >
-      <div className="services-shade" />
-
       <div className="services-content">
-        <div className="services-intro">
-          <p className="eyebrow">DỊCH VỤ BAE ENTERTAINMENT</p>
-          <h1>Dịch vụ đăng thuê TikTok</h1>
-          <p>
-            Đồng hành cùng team trong quá trình vận hành kênh. Liên hệ Đức để
-            nhận tư vấn và báo giá phù hợp.
-          </p>
-
-          <div className="services-points">
-            <span><Clock3 size={17} /> Phản hồi nhanh</span>
-            <span><ShieldCheck size={17} /> Minh bạch, rõ ràng</span>
-            <span><BadgeCheck size={17} /> Hỗ trợ tận tình</span>
-          </div>
-        </div>
-
         <aside className="services-order-card">
           <div className="services-order-icon">
             <Sparkles size={24} />

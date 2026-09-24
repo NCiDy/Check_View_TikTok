@@ -19,11 +19,9 @@ import { SessionsPage } from "./pages/SessionsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { CheckRun, TikTokAccount } from "./types";
 
-const BRAND_LOGO_URL = "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/logo%20BAE-Photoroom.png";
-
 export default function App() {
   const { user, loading } = useAuth();
-  if (loading) return <div className="boot-screen"><span className="brand-mark large"><img src={BRAND_LOGO_URL} alt="BAE Entertainment" /></span><p>Đang kết nối hệ thống…</p></div>;
+  if (loading) return <div className="boot-screen"><span className="brand-mark large">TT</span><p>Đang kết nối hệ thống…</p></div>;
   return <><ToastViewport />{user ? <AuthenticatedApp /> : <LoginPage />}</>;
 }
 
@@ -79,7 +77,7 @@ function AuthenticatedApp() {
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileOpen ? "open" : ""}`}>
-      <div className="sidebar-brand"><span className="brand-mark"><img src={BRAND_LOGO_URL} alt="BAE Entertainment" /></span><div><strong>BAE ENTERTAINMENT</strong><small>Internal management system</small></div><button className="mobile-close" onClick={() => setMobileOpen(false)}><X size={20} /></button></div>
+      <div className="sidebar-brand"><span className="brand-mark">TT</span><div><strong>BEATOK Manager</strong><small>Company Workspace</small></div><button className="mobile-close" onClick={() => setMobileOpen(false)}><X size={20} /></button></div>
       <nav>{nav.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end}><Icon size={18} /><span>{label}</span></NavLink>)}</nav>
       <div className="sidebar-status"><span className={connected ? "connection-dot online" : "connection-dot"} /><div><strong>{connected ? "Đang kết nối" : "Đang kết nối lại"}</strong><small>Realtime WebSocket</small></div></div>
     </aside>

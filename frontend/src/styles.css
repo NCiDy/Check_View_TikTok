@@ -1678,3 +1678,57 @@ tbody tr:hover .follower-highlight {
     font-size: .74rem;
   }
 }
+
+
+/* Service page: keep the original artwork visible and emphasize the entry point */
+.sidebar nav a:has(.nav-new-badge) {
+  color: #fff0cb;
+  background: linear-gradient(90deg, rgba(252, 92, 67, .18), rgba(255, 171, 48, .10));
+  border-color: rgba(255, 141, 57, .5);
+  box-shadow: 0 0 18px rgba(255, 102, 49, .13), inset 3px 0 0 #ff7546;
+}
+
+.sidebar nav a:has(.nav-new-badge):hover,
+.sidebar nav a:has(.nav-new-badge).active {
+  color: #fff;
+  background: linear-gradient(90deg, rgba(252, 92, 67, .28), rgba(255, 171, 48, .16));
+  border-color: rgba(255, 177, 82, .72);
+  box-shadow: 0 0 22px rgba(255, 116, 50, .24), inset 3px 0 0 #ffcf5b;
+}
+
+.services-page {
+  background-size: 100% 100%;
+  background-position: center;
+}
+
+.services-shade {
+  display: none;
+}
+
+.services-content {
+  width: 100%;
+  max-width: none;
+  grid-template-columns: 1fr;
+  justify-items: end;
+  padding-left: clamp(24px, 5vw, 70px);
+  padding-right: clamp(24px, 5vw, 70px);
+}
+
+.services-order-card {
+  justify-self: end;
+}
+
+@media (max-width: 800px) {
+  .services-page {
+    background-size: cover;
+    background-position: center;
+  }
+
+  .services-content {
+    justify-items: start;
+  }
+
+  .services-order-card {
+    justify-self: start;
+  }
+}

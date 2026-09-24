@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Building2, ClipboardList, KeyRound, LayoutDashboard, LogOut, Menu, Network, RefreshCw, Search, Settings2, Shield, Users, Volume2, VolumeX, X } from "lucide-react";
+import { Activity, Building2, ClipboardList, KeyRound, LayoutDashboard, LogOut, Menu, Network, RefreshCw, Search, Settings2, Shield, Sparkles, Users, Volume2, VolumeX, X } from "lucide-react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, notify } from "./api";
 import { useAuth } from "./AuthContext";
@@ -16,6 +16,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { OrganizationPage } from "./pages/OrganizationPage";
 import { PeoplePage } from "./pages/PeoplePage";
 import { SessionsPage } from "./pages/SessionsPage";
+import { ServicesPage } from "./pages/ServicesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { CheckRun, TikTokAccount } from "./types";
 const BRAND_LOGO_URL =
@@ -54,6 +55,7 @@ function AuthenticatedApp() {
   const nav = [
     { to: "/", label: "Tổng quan", icon: LayoutDashboard, end: true },
     { to: "/accounts", label: "Kênh TikTok", icon: Activity },
+    { to: "/services", label: "Dịch vụ của Đức", icon: Sparkles, isNew: true },
     { to: "/organization", label: "Tổ chức nhân sự", icon: Network },
     ...(isCompanyAdmin ? [
       { to: "/people", label: "Quản lý nhân sự", icon: Users },
@@ -96,7 +98,7 @@ function AuthenticatedApp() {
           <X size={20} />
         </button>
       </div>
-      <nav>{nav.map(({ to, label, icon: Icon, end }) => <NavLink key={to} to={to} end={end}><Icon size={18} /><span>{label}</span></NavLink>)}</nav>
+      <nav>{nav.map(({ to, label, icon: Icon, end, isNew }) => <NavLink key={to} to={to} end={end}><Icon size={18} /><span>{label}</span>{isNew && <em className="nav-new-badge">NEW</em>}</NavLink>)}</nav>
       <div className="sidebar-status"><span className={connected ? "connection-dot online" : "connection-dot"} /><div><strong>{connected ? "Đang kết nối" : "Đang kết nối lại"}</strong><small>Realtime WebSocket</small></div></div>
     </aside>
     {mobileOpen && <button className="mobile-overlay" onClick={() => setMobileOpen(false)} />}
@@ -112,7 +114,7 @@ function AuthenticatedApp() {
         </button>
       )}<button className="topbar-button" onClick={toggleVoice}>{voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}<span>{voiceEnabled ? "Đang bật loa" : "Bật loa"}</span></button><label className="profile-button" title="Bấm để đổi ảnh"><Avatar name={user!.full_name} url={user!.avatar_url} size="sm" /><span><strong>{user!.full_name}</strong><small>{user!.role}{user!.is_system_owner ? " · Chính" : ""}</small></span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => void uploadOwnAvatar(e.target.files?.[0])} /></label><button className="icon-button" title="Đổi mật khẩu" onClick={() => setPasswordOpen(true)}><KeyRound size={18} /></button><button className="icon-button logout-icon" title="Đăng xuất" onClick={() => void logout()}><LogOut size={18} /></button></div></header>
       <JobPanel />
-      <main className="content"><Routes><Route path="/" element={<DashboardPage />} /><Route path="/accounts" element={<AccountsPage />} /><Route path="/organization" element={<OrganizationPage />} /><Route path="/sessions" element={<SessionsPage />} />{isCompanyAdmin && <><Route path="/people" element={<PeoplePage />} /><Route path="/audit" element={<AuditPage />} /><Route path="/settings" element={<SettingsPage />} /></>}<Route path="*" element={<Navigate to="/" replace />} /></Routes></main>
+      <main className="content"><Routes><Route path="/" element={<DashboardPage />} /><Route path="/accounts" element={<AccountsPage />} /><Route path="/services" element={<ServicesPage />} /><Route path="/organization" element={<OrganizationPage />} /><Route path="/sessions" element={<SessionsPage />} />{isCompanyAdmin && <><Route path="/people" element={<PeoplePage />} /><Route path="/audit" element={<AuditPage />} /><Route path="/settings" element={<SettingsPage />} /></>}<Route path="*" element={<Navigate to="/" replace />} /></Routes></main>
     </div>
     {searchOpen && <SearchDialog onClose={() => setSearchOpen(false)} onOpenOwner={(id) => { setSearchOpen(false); navigate(`/accounts?owner=${id}`); }} />}
     {passwordOpen && <PasswordDialog onClose={() => setPasswordOpen(false)} />}

@@ -1759,3 +1759,14 @@ tbody tr:hover .follower-highlight {
     min-height: calc(100vh - 73px);
   }
 }
+.sidebar nav a:has(.nav-new-badge) {
+  gap: 8px;
+  padding: 0 10px;
+  font-size: 0.79rem;
+  white-space: nowrap;
+}
+
+.sidebar nav a:has(.nav-new-badge) .nav-new-badge {
+  padding: 3px 5px;
+  font-size: 0.48rem;
+}

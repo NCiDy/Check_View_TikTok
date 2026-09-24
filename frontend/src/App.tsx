@@ -62,7 +62,7 @@ function AuthenticatedApp() {
       { to: "/settings", label: "Cấu hình", icon: Settings2 },
     ] : []),
     { to: "/sessions", label: "Phiên đăng nhập", icon: Shield },
-    { to: "/services", label: "Dịch vụ của Đức", icon: Sparkles, isNew: true },
+    { to: "/services", label: "Góc Làm Giàu Của Đức", icon: Sparkles, isNew: true },
   ];
 
   async function uploadOwnAvatar(file?: File) {

@@ -2,10 +2,9 @@ import { useState } from "react";
 import { LockKeyhole, UserRound } from "lucide-react";
 import { useAuth } from "../AuthContext";
 
-const LOGIN_BACKGROUND_URL = "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/nenmoi1.png";
-
-const BRAND_BACKGROUND_URL =
-  "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/166ca8dd-e8bc-4ab7-aae1-40334905990d.png";
+const LOGIN_BACKGROUND_URL = "";
+//https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/nenmoi1.png
+const BRAND_BACKGROUND_URL = "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/166ca8dd-e8bc-4ab7-aae1-40334905990d.png";
 
 export function LoginPage() {
   const { login, signedOutReason } = useAuth();

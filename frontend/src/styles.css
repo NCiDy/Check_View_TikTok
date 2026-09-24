@@ -68,7 +68,9 @@ small { display: block; color: var(--muted); font-size: .73rem; line-height: 1.4
   max-width: 1600px;
   margin: 0 auto;
 }
-
+.login-page .login-card {
+  transform: translateX(600px);
+}
 .login-page-with-background {
   min-height: 100vh;
   width: 100%;
@@ -1442,3 +1444,4 @@ tbody tr:hover .follower-highlight {
   display: grid;
   gap: 12px;
 }
+

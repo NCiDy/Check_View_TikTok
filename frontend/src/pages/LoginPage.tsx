@@ -1,16 +1,20 @@
 import { useState } from "react";
-import { Activity, LockKeyhole, UserRound } from "lucide-react";
+import { LockKeyhole, UserRound } from "lucide-react";
 import { useAuth } from "../AuthContext";
 
-const LOGIN_BACKGROUND_URL =
-  "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/nenmoi1.png";
+const LOGIN_BACKGROUND_URL = "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/nenmoi1.png";
+
+const BRAND_BACKGROUND_URL =
+  "https://wpotbxpffxoaamwoqgrt.supabase.co/storage/v1/object/public/avatars/166ca8dd-e8bc-4ab7-aae1-40334905990d.png";
 
 export function LoginPage() {
   const { login, signedOutReason } = useAuth();
+
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(signedOutReason || "");
   const [loading, setLoading] = useState(false);
+
   return (
     <main
       className={
@@ -23,34 +27,26 @@ export function LoginPage() {
           ? {
               backgroundImage: `url("${LOGIN_BACKGROUND_URL}")`,
             }
-          : undefined
+          : {
+              backgroundImage: `url("${BRAND_BACKGROUND_URL}")`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              backgroundRepeat: "no-repeat",
+              width: "100vw",
+              height: "100vh",
+              minHeight: "100vh",
+              maxWidth: "none",
+              margin: 0,
+              overflow: "hidden",
+            }
       }
     >
-      {!LOGIN_BACKGROUND_URL && (
-        <section className="login-brand">
-          <span className="brand-mark large">TT</span>
-
-          <p className="eyebrow">BEA ENTERTAIMENT</p>
-
-          <h1>BeaTok Tok Tok</h1>
-
-          <br />
-
-          <h3>Phòng Víp mãi đỉnh</h3>
-
-          <p>Phòng Víp Víp Víp Bea Tok Tok Tok</p>
-
-          <div className="login-feature">
-            <Activity size={18} />
-            <span>Dữ liệu đồng bộ trực tiếp sau mỗi job</span>
-          </div>
-        </section>
-      )}
-
       <section className="login-card">
         <div>
           <p className="eyebrow">ĐĂNG NHẬP</p>
+
           <h2>Chào mừng trở lại</h2>
+
           <p>Mỗi tài khoản chỉ hoạt động trên một thiết bị.</p>
         </div>
 
@@ -58,6 +54,7 @@ export function LoginPage() {
           className="form-stack"
           onSubmit={async (e) => {
             e.preventDefault();
+
             setLoading(true);
             setError("");
 
@@ -72,8 +69,10 @@ export function LoginPage() {
         >
           <label>
             Tên đăng nhập
+
             <div className="input-icon">
               <UserRound size={17} />
+
               <input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -86,8 +85,10 @@ export function LoginPage() {
 
           <label>
             Mật khẩu
+
             <div className="input-icon">
               <LockKeyhole size={17} />
+
               <input
                 type="password"
                 value={password}
@@ -98,7 +99,11 @@ export function LoginPage() {
             </div>
           </label>
 
-          {error && <div className="form-error">{error}</div>}
+          {error && (
+            <div className="form-error">
+              {error}
+            </div>
+          )}
 
           <button
             className="button primary login-button"

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
 from app.check_queue import CheckQueue
-from app.job_manager import InflightCheck, JobManager, retryable_result
+from app.job_manager import InflightCheck, JobManager, retryable_result, selected_ids_for_run
 from app.models import CheckRun, TikTokAccount
 from app.read_cache import cached_read, invalidate_reads
 
@@ -60,6 +60,12 @@ def test_priority_aging_prevents_starvation(monkeypatch):
 ])
 def test_retry_classifies_errors(status, http, expected):
     assert retryable_result({"status": status, "status_code": http}) is expected
+
+
+def test_only_selected_scope_persists_selected_account_ids():
+    account_ids = [uuid.uuid4(), uuid.uuid4()]
+    assert selected_ids_for_run("SELECTED", account_ids) == account_ids
+    assert selected_ids_for_run("USER", account_ids) == []
 
 
 def test_list_orm_does_not_read_video_json():

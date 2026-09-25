@@ -37,6 +37,15 @@ def retryable_result(result):
     return status in {"TIMEOUT", "PARSE_ERROR", "EXCEPTION"}
 
 
+def selected_ids_for_run(scope_type: str, account_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    """Only SELECTED runs may persist selected_account_ids.
+
+    USER runs still receive account_ids for execution, but the database shape
+    constraint requires their selected_account_ids column to stay empty.
+    """
+    return account_ids if scope_type == "SELECTED" else []
+
+
 @dataclass
 class InflightCheck:
     future: concurrent.futures.Future
@@ -198,7 +207,7 @@ class JobManager:
                 trigger_type=trigger_type,
                 scope_type=scope_type,
                 target_user_id=target_user_id,
-                selected_account_ids=account_ids,
+                selected_account_ids=selected_ids_for_run(scope_type, account_ids),
                 priority=priority,
                 total_accounts=len(account_ids),
                 status="QUEUED",
@@ -207,7 +216,14 @@ class JobManager:
             try:
                 db.flush()
             except IntegrityError as exc:
-                raise ValueError("Bạn đang có một job check khác chưa hoàn thành") from exc
+                constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", "")
+                if constraint in {
+                    "ux_check_runs_one_active_per_user",
+                    "ux_check_runs_one_active_per_session",
+                }:
+                    raise ValueError("Bạn đang có một job check khác chưa hoàn thành") from exc
+                logger.exception("Không thể tạo check run scope=%s", scope_type)
+                raise ValueError("Không thể tạo lượt check do dữ liệu không hợp lệ") from exc
             run_id = run.id
 
         stop_event = threading.Event()

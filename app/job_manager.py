@@ -161,12 +161,26 @@ class JobManager:
             if requested_by:
                 # Serialize starts for the same actor, including two sessions.
                 db.execute(select(User.id).where(User.id == requested_by).with_for_update())
-                active = db.scalar(select(CheckRun.id).where(
+                active = db.scalar(select(CheckRun).where(
                     CheckRun.requested_by == requested_by,
                     CheckRun.status.in_(("QUEUED", "RUNNING")),
-                ).limit(1))
+                ).order_by(CheckRun.created_at.desc()).limit(1))
                 if active:
-                    raise ValueError("Bạn đang có một lượt check chưa hoàn thành")
+                    # A deploy/crash can leave a RUNNING row although this
+                    # process has no worker for it. Recover old orphan rows so
+                    # they cannot block the account forever.
+                    age = datetime.now(timezone.utc) - (active.created_at or datetime.now(timezone.utc))
+                    if active.id not in self._stop_events and age >= timedelta(seconds=30):
+                        active.status = "FAILED"
+                        active.finished_at = datetime.now(timezone.utc)
+                        active.message = "Lượt check bị gián đoạn do server khởi động lại"
+                        db.flush()
+                    else:
+                        processed = int(active.processed_accounts or 0)
+                        total = int(active.total_accounts or 0)
+                        raise ValueError(
+                            f"Bạn đang có lượt check {processed}/{total} kênh chưa hoàn thành"
+                        )
             if len(self._stop_events) >= 20:
                 raise ValueError("Hệ thống đang xử lý nhiều lượt check, vui lòng thử lại sau")
             account_ids = self._account_ids_for_scope(

@@ -15,6 +15,13 @@ export function useStartCheck() {
       setCurrentRun(run);
       notify("Đã bắt đầu job check", "success");
     },
-    onError: (error) => notify((error as Error).message, "error"),
+    onError: (error) => {
+      notify((error as Error).message, "error");
+      // If another session of the same login owns the active job, display it
+      // instead of leaving the user with an unexplained blocking toast.
+      void api<{ runs: CheckRun[] }>("/api/check-runs/current")
+        .then(({ runs }) => { if (runs[0]) setCurrentRun(runs[0]); })
+        .catch(() => {});
+    },
   });
 }

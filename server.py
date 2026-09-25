@@ -2109,16 +2109,18 @@ def start_check(
 def current_check_run(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
-    current_session: UserSession = Depends(get_current_session),
+    _current_session: UserSession = Depends(get_current_session),
 ):
+    # Job creation is locked per account, so every session of that account must
+    # see the same active job. Otherwise an invisible job can block the user.
     query = select(CheckRun).where(
         CheckRun.status.in_(("QUEUED", "RUNNING")),
-        CheckRun.requested_session_id == current_session.id,
+        CheckRun.requested_by == current.id,
     )
     if current.role in {"BOSS", "MANAGER"}:
         query = select(CheckRun).where(
             CheckRun.status.in_(("QUEUED", "RUNNING")),
-            or_(CheckRun.requested_session_id == current_session.id, CheckRun.trigger_type == "SCHEDULED"),
+            or_(CheckRun.requested_by == current.id, CheckRun.trigger_type == "SCHEDULED"),
         )
     runs = db.scalars(query.order_by(CheckRun.created_at.desc()))
     return {"runs": [JobManager.serialize_run(run) for run in runs]}
@@ -2136,8 +2138,8 @@ def stop_check_run(
     run = db.get(CheckRun, run_uuid)
     if run is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy job")
-    if run.trigger_type == "MANUAL" and run.requested_session_id != current_session.id:
-        raise HTTPException(status_code=403, detail="Chỉ thiết bị khởi tạo mới được dừng job này")
+    if run.trigger_type == "MANUAL" and run.requested_by != current.id:
+        raise HTTPException(status_code=403, detail="Bạn không được dừng lượt check của tài khoản khác")
     if run.trigger_type == "SCHEDULED" and current.role != "BOSS":
         raise HTTPException(status_code=403, detail="Chỉ BOSS được dừng lịch check tự động")
     if not get_job_manager(request).stop_job(run_uuid):

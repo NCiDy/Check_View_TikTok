@@ -33,6 +33,7 @@ from fastapi import (
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
+    Query,
 )
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,8 +41,8 @@ from pydantic import BaseModel, Field
 from PIL import Image, UnidentifiedImageError
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import delete, and_, exists, func, or_, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, TimeoutError as PoolTimeoutError, OperationalError
+from sqlalchemy.orm import Session, load_only
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -49,6 +50,7 @@ from app.config import settings
 from app.audit import write_audit
 from app.database import db_session, get_db, test_database_connection
 from app.job_manager import JobManager
+from app.read_cache import cached_read, invalidate_reads
 from app.models import Department, AuditLog, AppSettings, CheckRun, Machine, TikTokAccount, User, UserSession
 from app.permissions import (
     ensure_can_manage_accounts,
@@ -245,10 +247,18 @@ class ConnectionManager:
                     }
                 await self.send_users(boss_ids, event, payload)
 
-            # Other browsers receive only an invalidation after completion, never
-            # somebody else's progress bar or stop button.
+            if event == "job_progress" and payload.get("account", {}).get("owner_id"):
+                account = dict(payload["account"])
+                owner_id = str(account["owner_id"])
+                recipients = await asyncio.to_thread(self._account_recipients, owner_id)
+                # Never send another user's progress, video payload or secrets.
+                for key in ("alerts", "leader_id", "new_problem"):
+                    account.pop(key, None)
+                account["id"] = account.pop("account_id")
+                await self.send_users(recipients, "account_updated", {"account": account})
+
             if event in {"job_finished", "job_failed"}:
-                await self.broadcast("data_updated", {"source": "check_run"})
+                await self.broadcast("dashboard_changed", {})
             return
 
         if event == "alert":
@@ -272,8 +282,38 @@ class ConnectionManager:
             if recipients:
                 await self.send_users(recipients, event, payload)
 
+    @staticmethod
+    def _account_recipients(owner_id: str) -> set[str]:
+        def load():
+            from app.permissions import can_view_user
+            with db_session() as db:
+                users = db.scalars(select(User).where(User.is_active.is_(True)).options(
+                    load_only(User.id, User.role, User.leader_id, User.department_id, User.is_active)
+                )).all()
+                return {str(user.id) for user in users if can_view_user(db, user, uuid.UUID(owner_id))}
+        return cached_read(("recipients", owner_id), load)
+
 
 ws_manager = ConnectionManager()
+
+
+def publish_ws(method: str, *args) -> None:
+    invalidate_reads()
+    loop = getattr(app.state, "event_loop", None)
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(getattr(ws_manager, method)(*args), loop)
+
+
+def validate_websocket_session(user_id: uuid.UUID, session_id: uuid.UUID, touch=False) -> bool:
+    with db_session() as db:
+        active_session = db.get(UserSession, session_id)
+        user_active = db.scalar(select(User.is_active).where(User.id == user_id))
+        if (not user_active or active_session is None or active_session.user_id != user_id
+                or active_session.revoked_at is not None or active_session.expires_at <= utcnow()):
+            return False
+        if touch:
+            active_session.last_seen_at = utcnow()
+        return True
 
 
 async def scheduler_loop(app: FastAPI) -> None:
@@ -315,6 +355,7 @@ async def lifespan(app: FastAPI):
     app.state.job_manager = None
     app.state.scheduler_task = None
     event_loop = asyncio.get_running_loop()
+    app.state.event_loop = event_loop
     try:
         status = test_database_connection()
         if not status["tables_ok"]:
@@ -328,6 +369,14 @@ async def lifespan(app: FastAPI):
         # Bounded operational data: keep audit for 180 days and revoked sessions
         # for 30 days. Check history already keeps only the latest 20 runs/user.
         with db_session() as db:
+            from sqlalchemy import update
+            db.execute(update(CheckRun).where(CheckRun.status.in_(("QUEUED", "RUNNING"))).values(
+                status="FAILED", finished_at=utcnow(),
+                message="Server khởi động lại; hãy check lại các kênh chưa cập nhật.",
+            ))
+            db.execute(update(AppSettings).where(AppSettings.id == 1).values(
+                auto_check_enabled=False, next_auto_check_at=None,
+            ))
             db.execute(delete(AuditLog).where(AuditLog.created_at < utcnow() - timedelta(days=180)))
             db.execute(delete(UserSession).where(
                 UserSession.revoked_at.is_not(None),
@@ -341,7 +390,7 @@ async def lifespan(app: FastAPI):
 
         app.state.job_manager = JobManager(event_callback=event_bridge)
         app.state.db_ready = True
-        app.state.scheduler_task = asyncio.create_task(scheduler_loop(app))
+        # Company-wide automatic checks are paused; no polling scheduler is needed.
         logger.info("Đã kết nối database và khởi động JobManager")
     except Exception as exc:
         app.state.db_error = str(exc)
@@ -393,7 +442,15 @@ def react_asset(asset_path: str):
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    started = time.monotonic()
     response = await call_next(request)
+    elapsed = time.monotonic() - started
+    response.headers["Server-Timing"] = f"app;dur={elapsed * 1000:.0f}"
+    if elapsed >= 2:
+        logger.warning("slow_api method=%s path=%s status=%s seconds=%.2f",
+                       request.method, request.url.path, response.status_code, elapsed)
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and response.status_code < 400:
+        invalidate_reads()
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
@@ -410,6 +467,15 @@ async def security_headers(request: Request, call_next):
     else:
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+@app.exception_handler(PoolTimeoutError)
+@app.exception_handler(OperationalError)
+async def database_busy_handler(_request: Request, exc: Exception):
+    logger.warning("Database temporarily unavailable: %s", type(exc).__name__)
+    return JSONResponse(status_code=503, headers={"Retry-After": "3"}, content={
+        "detail": "Cơ sở dữ liệu đang bận hoặc mất kết nối tạm thời. Vui lòng thử lại sau ít giây.",
+    })
 
 
 @app.exception_handler(RuntimeError)
@@ -641,7 +707,7 @@ def serialize_machine(db: Session, machine: Machine) -> dict[str, Any]:
     return serialize_machines(db, [machine])[0]
 
 
-def serialize_account(account: TikTokAccount, machine: Machine, owner: User) -> dict[str, Any]:
+def serialize_account(account: TikTokAccount, machine: Machine, owner: User, include_details: bool = False) -> dict[str, Any]:
     follower_delta = None
     if account.followers is not None and account.previous_followers is not None:
         follower_delta = account.followers - account.previous_followers
@@ -669,7 +735,7 @@ def serialize_account(account: TikTokAccount, machine: Machine, owner: User) -> 
         "total_sample_views": account.total_sample_views,
         "avg_sample_views": account.avg_sample_views,
         "video_count_sample": account.video_count_sample,
-        "recent_videos": account.recent_videos or [],
+        "recent_videos": (account.recent_videos or []) if include_details else [],
         "status": account.status,
         "previous_status": account.previous_status,
         "is_private": account.is_private,
@@ -822,7 +888,7 @@ def health(request: Request):
 
 
 @app.post("/api/auth/login")
-async def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     ip = request.client.host if request.client else "unknown"
     key = f"{ip}:{payload.username.lower()}"
     login_limiter.ensure_allowed(key)
@@ -854,7 +920,7 @@ async def login(payload: LoginRequest, request: Request, db: Session = Depends(g
     write_audit(db, request, user, "AUTH_LOGIN", "SESSION", user_session.id)
     db.commit()
     if revoked_ids:
-        await ws_manager.send_sessions(
+        publish_ws("send_sessions",
             set(revoked_ids),
             "session_revoked",
             {"reason": "Tài khoản vừa đăng nhập trên thiết bị khác"},
@@ -869,7 +935,7 @@ async def login(payload: LoginRequest, request: Request, db: Session = Depends(g
 
 
 @app.post("/api/auth/logout")
-async def logout(
+def logout(
     request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(csrf_protect),
@@ -896,7 +962,7 @@ def me(
 
 
 @app.post("/api/auth/change-password")
-async def change_password(
+def change_password(
     payload: ChangePasswordRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -920,7 +986,7 @@ async def change_password(
     write_audit(db, request, current, "PASSWORD_CHANGED", "USER", current.id)
     db.commit()
     if revoked_ids:
-        await ws_manager.send_sessions(
+        publish_ws("send_sessions",
             set(revoked_ids), "session_revoked", {"reason": "Mật khẩu đã được thay đổi"}
         )
     return {"success": True}
@@ -942,7 +1008,7 @@ def list_users(
 
 
 @app.post("/api/users")
-async def create_user(
+def create_user(
     payload: UserCreateRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -994,12 +1060,12 @@ async def create_user(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Tên đăng nhập đã tồn tại") from exc
-    await ws_manager.broadcast("directory_updated", {"user_id": str(user.id)})
+    publish_ws("broadcast", "directory_updated", {"user_id": str(user.id)})
     return {"user": serialize_user(db, user)}
 
 
 @app.patch("/api/users/{user_id}")
-async def update_user(
+def update_user(
     user_id: str,
     payload: UserUpdateRequest,
     request: Request,
@@ -1042,18 +1108,18 @@ async def update_user(
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc.orig)) from exc
     if revoked_ids:
-        await ws_manager.send_sessions(
+        publish_ws("send_sessions",
             set(revoked_ids), "session_revoked", {"reason": "Tài khoản đã bị khóa"}
         )
-    await ws_manager.broadcast("directory_updated", {"user_id": str(target.id)})
-    await ws_manager.send_users(
+    publish_ws("broadcast", "directory_updated", {"user_id": str(target.id)})
+    publish_ws("send_users",
         {str(target.id)}, "permissions_updated", {"user_id": str(target.id)}
     )
     return {"user": serialize_user(db, target)}
 
 
 @app.post("/api/users/{user_id}/reset-password")
-async def reset_password(
+def reset_password(
     user_id: str,
     payload: ResetPasswordRequest,
     request: Request,
@@ -1075,13 +1141,13 @@ async def reset_password(
     write_audit(db, request, current, "PASSWORD_RESET", "USER", target.id)
     db.commit()
     if revoked_ids:
-        await ws_manager.send_sessions(
+        publish_ws("send_sessions",
             set(revoked_ids), "session_revoked", {"reason": "BOSS đã đặt lại mật khẩu"}
         )
     return {"success": True}
 
 @app.post("/api/users/{user_id}/avatar")
-async def upload_user_avatar(
+def upload_user_avatar(
     user_id: str,
     request: Request,
     avatar: UploadFile = File(...),
@@ -1123,7 +1189,7 @@ async def upload_user_avatar(
         )
 
     # Đọc tối đa 2 MB + 1 byte để kiểm tra vượt giới hạn.
-    image_data = await avatar.read(2 * 1024 * 1024 + 1)
+    image_data = avatar.file.read(2 * 1024 * 1024 + 1)
 
     if not image_data:
         raise HTTPException(
@@ -1221,7 +1287,7 @@ async def upload_user_avatar(
     write_audit(db, request, current, "AVATAR_UPDATED", "USER", target.id)
     db.commit()
     db.refresh(target)
-    await ws_manager.broadcast("directory_updated", {"user_id": str(target.id)})
+    publish_ws("broadcast", "directory_updated", {"user_id": str(target.id)})
 
     return {
         "success": True,
@@ -1243,7 +1309,7 @@ def list_machines(
 
 
 @app.post("/api/machines")
-async def create_machine(
+def create_machine(
     payload: MachineCreateRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -1286,12 +1352,12 @@ async def create_machine(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Số máy này đã tồn tại") from exc
-    await ws_manager.broadcast("data_updated", {"source": "machine", "owner_id": str(owner_id)})
+    publish_ws("broadcast", "data_updated", {"source": "machine", "owner_id": str(owner_id)})
     return {"machine": serialize_machine(db, machine)}
 
 
 @app.patch("/api/machines/{machine_id}")
-async def update_machine(
+def update_machine(
     machine_id: str,
     payload: MachineUpdateRequest,
     request: Request,
@@ -1313,12 +1379,12 @@ async def update_machine(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Số máy này đã tồn tại") from exc
-    await ws_manager.broadcast("data_updated", {"source": "machine", "owner_id": str(machine.owner_id)})
+    publish_ws("broadcast", "data_updated", {"source": "machine", "owner_id": str(machine.owner_id)})
     return {"machine": serialize_machine(db, machine)}
 
 
 @app.delete("/api/machines/{machine_id}")
-async def delete_machine(
+def delete_machine(
     machine_id: str,
     request: Request,
     db: Session = Depends(get_db),
@@ -1339,12 +1405,12 @@ async def delete_machine(
     )
     db.delete(machine)
     db.commit()
-    await ws_manager.broadcast("data_updated", {"source": "machine", "owner_id": str(owner_id)})
+    publish_ws("broadcast", "data_updated", {"source": "machine", "owner_id": str(owner_id)})
     return {"success": True, "message": "Đã xóa máy và toàn bộ kênh thuộc máy"}
 
 
 @app.post("/api/accounts/bulk")
-async def add_accounts_bulk(
+def add_accounts_bulk(
     payload: BulkAccountsRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -1411,10 +1477,42 @@ async def add_accounts_bulk(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Có username hoặc vị trí kênh bị trùng") from exc
-    await ws_manager.broadcast(
+    publish_ws("broadcast",
         "data_updated", {"source": "accounts", "owner_id": str(machine.owner_id)}
     )
     return {"added": added, "rejected": rejected}
+
+
+def account_summary(db: Session, allowed_ids):
+    scope = Machine.owner_id.in_(allowed_ids)
+    metrics = {
+        "live": TikTokAccount.status == "LIVE",
+        "monetized": TikTokAccount.is_monetized.is_(True),
+        "joinPending": and_(TikTokAccount.is_monetized.is_(False), TikTokAccount.followers.between(10000, 10600)),
+        "large": and_(TikTokAccount.is_monetized.is_(False), TikTokAccount.followers.between(7000, 9999)),
+        "reviewPending": TikTokAccount.channel_condition == "OUT_BETA_REVIEW",
+        "rejected": TikTokAccount.channel_condition == "REJECTED",
+    }
+    def load_summary():
+        row = db.execute(select(
+            func.count().label("total"),
+            *[func.count().filter(expression).label(name) for name, expression in zip(
+                ("live", "monetized", "joinPending", "large", "reviewPending", "rejected"), metrics.values())],
+            func.max(TikTokAccount.followers).label("max_followers"),
+        ).select_from(TikTokAccount).join(Machine, Machine.id == TikTokAccount.machine_id).where(scope)).one()
+        return dict(row._mapping)
+    return cached_read(("account_summary", tuple(sorted(str(x) for x in allowed_ids))), load_summary)
+
+
+@app.get("/api/accounts-summary")
+def get_account_summary(owner_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    if owner_id == "ALL":
+        allowed_ids = visible_owner_ids(db, current)
+    else:
+        owner_uuid = parse_uuid(owner_id, "Owner ID")
+        ensure_can_view_user(db, current, owner_uuid)
+        allowed_ids = [owner_uuid]
+    return {"summary": account_summary(db, allowed_ids)}
 
 
 @app.get("/api/accounts")
@@ -1423,34 +1521,78 @@ def list_accounts(
     machine_id: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    condition: str | None = None,
+    metric: str = "ALL",
+    sort: Literal["MACHINE", "FOLLOWERS", "DELTA"] = "FOLLOWERS",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
-    query = (
-        select(TikTokAccount, Machine, User)
-        .join(Machine, Machine.id == TikTokAccount.machine_id)
-        .join(User, User.id == Machine.owner_id)
-    )
     if owner_id == "ALL":
         allowed_ids = visible_owner_ids(db, current)
-        query = query.where(Machine.owner_id.in_(allowed_ids))
     else:
         owner_uuid = parse_uuid(owner_id, "Owner ID")
         ensure_can_view_user(db, current, owner_uuid)
-        query = query.where(Machine.owner_id == owner_uuid)
-    if machine_id:
-        query = query.where(Machine.id == parse_uuid(machine_id, "Machine ID"))
+        allowed_ids = [owner_uuid]
+    scope = Machine.owner_id.in_(allowed_ids)
+    base = select(TikTokAccount.id).join(Machine, Machine.id == TikTokAccount.machine_id).where(scope)
+    metrics = {
+        "LIVE": TikTokAccount.status == "LIVE",
+        "MONETIZED": TikTokAccount.is_monetized.is_(True),
+        "JOIN_PENDING": and_(TikTokAccount.is_monetized.is_(False), TikTokAccount.followers.between(10000, 10600)),
+        "LARGE": and_(TikTokAccount.is_monetized.is_(False), TikTokAccount.followers.between(7000, 9999)),
+        "REVIEW_PENDING": TikTokAccount.channel_condition == "OUT_BETA_REVIEW",
+        "REJECTED": TikTokAccount.channel_condition == "REJECTED",
+    }
+    summary = account_summary(db, allowed_ids)
+    if machine_id and machine_id != "ALL":
+        base = base.where(Machine.id == parse_uuid(machine_id, "Machine ID"))
     if status and status != "ALL":
-        query = query.where(TikTokAccount.status == status)
-    if search:
-        pattern = f"%{search.strip().lower()}%"
-        query = query.where(TikTokAccount.username_normalized.ilike(pattern))
-    rows = db.execute(query.order_by(Machine.machine_number, TikTokAccount.slot_number)).all()
-    return {"accounts": [serialize_account(*row) for row in rows]}
+        base = base.where(TikTokAccount.status.in_(("ERROR", "UNCHECKED")) if status == "ERROR"
+                          else TikTokAccount.status == status)
+    if condition and condition != "ALL":
+        base = base.where(TikTokAccount.channel_condition == condition)
+    if metric in metrics:
+        base = base.where(metrics[metric])
+    if search and search.strip():
+        base = base.where(TikTokAccount.username_normalized.contains(search.strip().lower(), autoescape=True))
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    page = min(page, max(1, (total + page_size - 1) // page_size))
+    ordering = []
+    if not machine_id or machine_id == "ALL":
+        ordering.append(TikTokAccount.is_monetized.desc())
+    if sort == "FOLLOWERS":
+        ordering.append(TikTokAccount.followers.desc().nulls_last())
+    elif sort == "DELTA":
+        ordering.append((TikTokAccount.followers - TikTokAccount.previous_followers).desc().nulls_last())
+    ordering.extend((Machine.machine_number, TikTokAccount.slot_number, TikTokAccount.id))
+    query = (select(TikTokAccount, Machine, User)
+             .join(Machine, Machine.id == TikTokAccount.machine_id)
+             .join(User, User.id == Machine.owner_id)
+             .options(load_only(User.id, User.full_name, User.role))
+             .where(TikTokAccount.id.in_(base))
+             .order_by(*ordering).offset((page - 1) * page_size).limit(page_size))
+    rows = db.execute(query).all()
+    return {"accounts": [serialize_account(*row) for row in rows], "summary": summary,
+            "total": total, "page": page, "page_size": page_size}
+
+
+@app.get("/api/accounts/{account_id}")
+def account_detail(account_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    row = db.execute(select(TikTokAccount, Machine, User)
+                     .join(Machine, Machine.id == TikTokAccount.machine_id)
+                     .join(User, User.id == Machine.owner_id)
+                     .options(load_only(User.id, User.full_name, User.role))
+                     .where(TikTokAccount.id == parse_uuid(account_id, "Account ID"))).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
+    ensure_can_view_user(db, current, row[1].owner_id)
+    return {"account": serialize_account(*row, include_details=True)}
 
 
 @app.delete("/api/accounts/{account_id}")
-async def delete_account(
+def delete_account(
     account_id: str,
     request: Request,
     db: Session = Depends(get_db),
@@ -1468,12 +1610,12 @@ async def delete_account(
     )
     db.delete(account)
     db.commit()
-    await ws_manager.broadcast("data_updated", {"source": "account", "owner_id": str(owner_id)})
+    publish_ws("broadcast", "data_updated", {"source": "account", "owner_id": str(owner_id)})
     return {"success": True}
 
 
 @app.patch("/api/accounts/{account_id}/transfer")
-async def transfer_account(
+def transfer_account(
     account_id: str,
     payload: TransferAccountRequest,
     request: Request,
@@ -1542,7 +1684,7 @@ async def transfer_account(
 
     db.commit()
 
-    await ws_manager.broadcast(
+    publish_ws("broadcast",
         "data_updated",
         {"source": "account_transfer"},
     )
@@ -1551,7 +1693,7 @@ async def transfer_account(
 
 
 @app.patch("/api/accounts/{account_id}/monetization")
-async def update_account_monetization(
+def update_account_monetization(
     account_id: str,
     payload: MonetizationRequest,
     request: Request,
@@ -1595,7 +1737,7 @@ async def update_account_monetization(
          "machine_id": str(target_machine.id), "slot_number": payload.slot_number},
     )
     db.commit()
-    await ws_manager.broadcast("data_updated", {"source": "account_monetization"})
+    publish_ws("broadcast", "data_updated", {"source": "account_monetization"})
     return {"success": True}
 
 
@@ -1683,18 +1825,33 @@ def update_account_condition(
 @app.get("/api/dashboard")
 def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     owner_ids = visible_owner_ids(db, current)
-    rows = db.execute(
-        select(
-            TikTokAccount.status,
-            TikTokAccount.previous_status,
-            TikTokAccount.followers,
-            TikTokAccount.is_monetized,
-            TikTokAccount.channel_condition,
-            TikTokAccount.last_checked_at,
-        )
-        .join(Machine, Machine.id == TikTokAccount.machine_id)
-        .where(Machine.owner_id.in_(owner_ids))
-    ).all() if owner_ids else []
+    # Aggregate in SQL: do not transfer all 800 account rows for counters.
+    rejected = TikTokAccount.channel_condition == "REJECTED"
+    review = TikTokAccount.channel_condition == "OUT_BETA_REVIEW"
+    monetized = TikTokAccount.is_monetized.is_(True)
+    join_pending = and_(TikTokAccount.is_monetized.is_(False), TikTokAccount.followers.between(10000, 10600))
+    large = and_(TikTokAccount.is_monetized.is_(False), TikTokAccount.followers.between(7000, 9999))
+    normal_condition = or_(TikTokAccount.channel_condition.is_(None),
+                           TikTokAccount.channel_condition.not_in(("REJECTED", "OUT_BETA_REVIEW")))
+    measures = {
+        "live": TikTokAccount.status == "LIVE", "monetized": monetized,
+        "join_pending": join_pending, "large": large, "review_pending": review,
+        "rejected": rejected, "die": TikTokAccount.status == "DIE",
+        "error": TikTokAccount.status.in_(("ERROR", "UNCHECKED")),
+        "unchecked": TikTokAccount.status == "UNCHECKED",
+        "new_problem": and_(TikTokAccount.previous_status == "LIVE", TikTokAccount.status.in_(("DIE", "ERROR"))),
+        "composition_monetized": and_(normal_condition, monetized),
+        "composition_join": and_(normal_condition, join_pending),
+        "composition_large": and_(normal_condition, large),
+    }
+    def load_counts():
+        row = db.execute(select(
+            func.count().label("total"), func.max(TikTokAccount.last_checked_at).label("last_checked_at"),
+            *[func.count().filter(expression).label(name) for name, expression in measures.items()],
+        ).select_from(TikTokAccount).join(Machine, Machine.id == TikTokAccount.machine_id)
+          .where(Machine.owner_id.in_(owner_ids))).one()
+        return dict(row._mapping)
+    counts = cached_read(("dashboard", tuple(sorted(str(x) for x in owner_ids))), load_counts)
 
     follower_delta = TikTokAccount.followers - TikTokAccount.previous_followers
     company_rows = db.execute(
@@ -1722,35 +1879,15 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
         .limit(5)
     ).all()
 
-    last_checked = max(
-        (row.last_checked_at for row in rows if row.last_checked_at),
-        default=None,
-    )
-
-    recent_changes = []
     breakthrough_channels = []
     composition = {
-        "monetized": 0,
-        "join_pending": 0,
-        "large": 0,
-        "review_pending": 0,
-        "rejected": 0,
-        "remaining": 0,
+        "monetized": counts["composition_monetized"],
+        "join_pending": counts["composition_join"],
+        "large": counts["composition_large"],
+        "review_pending": counts["review_pending"],
+        "rejected": counts["rejected"],
     }
-
-    for row in rows:
-        if row.channel_condition == "REJECTED":
-            composition["rejected"] += 1
-        elif row.channel_condition == "OUT_BETA_REVIEW":
-            composition["review_pending"] += 1
-        elif row.is_monetized:
-            composition["monetized"] += 1
-        elif row.followers is not None and 10000 <= row.followers <= 10600:
-            composition["join_pending"] += 1
-        elif row.followers is not None and 7000 <= row.followers <= 9999:
-            composition["large"] += 1
-        else:
-            composition["remaining"] += 1
+    composition["remaining"] = counts["total"] - sum(composition.values())
 
     for row in company_rows:
         can_see_username = (
@@ -1789,34 +1926,15 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
         })
 
     return {
-        "total": len(rows),
-        "live": sum(row.status == "LIVE" for row in rows),
-        "monetized": sum(row.is_monetized for row in rows),
-        "join_pending": sum(
-            not row.is_monetized and row.followers is not None and 10000 <= row.followers <= 10600
-            for row in rows
-        ),
-        "large": sum(
-            not row.is_monetized and row.followers is not None and 7000 <= row.followers <= 9999
-            for row in rows
-        ),
-        "review_pending": sum(row.channel_condition == "OUT_BETA_REVIEW" for row in rows),
-        "rejected": sum(row.channel_condition == "REJECTED" for row in rows),
-        "die": sum(row.status == "DIE" for row in rows),
-        "error": sum(row.status in {"ERROR", "UNCHECKED"} for row in rows),
-        "unchecked": sum(row.status == "UNCHECKED" for row in rows),
-        "new_problem": sum(
-            row.previous_status == "LIVE" and row.status in {"DIE", "ERROR"}
-            for row in rows
-        ),
-        "last_checked_at": iso(last_checked),
-        "recent_changes": recent_changes[:30],
+        **{key: value for key, value in counts.items() if not key.startswith("composition_")},
+        "last_checked_at": iso(counts["last_checked_at"]),
+        "recent_changes": [],
         "breakthrough_channels": breakthrough_channels,
         "composition": composition,
     }
 
 @app.patch("/api/departments/{department_id}")
-async def update_department(
+def update_department(
     department_id: str,
     payload: DepartmentUpdateRequest,
     request: Request,
@@ -1860,7 +1978,7 @@ async def update_department(
 
     db.commit()
 
-    await ws_manager.broadcast(
+    publish_ws("broadcast",
         "directory_updated",
         {"department_id": str(department.id)},
     )
@@ -1928,7 +2046,7 @@ def global_search(
 
 
 @app.post("/api/check-runs")
-async def start_check(
+def start_check(
     payload: CheckStartRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -1951,29 +2069,26 @@ async def start_check(
             .join(TikTokAccount, TikTokAccount.machine_id == Machine.id)
             .where(TikTokAccount.id.in_(selected_ids))
         ))
-        if len(owner_ids) != 1 and current.role not in {"BOSS", "MANAGER"}:
+        if len(owner_ids) != 1:
             raise HTTPException(status_code=403, detail="Mỗi lần chỉ được check kênh của một người")
         for owner_id in owner_ids:
             ensure_can_start_manual_check(db, current, owner_id)
-    elif payload.scope_type == "LEADER_GROUP":
-        if current.role not in {"BOSS", "MANAGER"} or target_id is None:
-            raise HTTPException(status_code=403, detail="Chỉ BOSS được check cả nhóm Leader")
-        target = db.get(User, target_id)
-        if target is None or target.role != "LEADER":
-            raise HTTPException(status_code=422, detail="Leader không hợp lệ")
-    elif payload.scope_type == "COMPANY":
-        if current.role not in {"BOSS", "MANAGER"}:
-            raise HTTPException(status_code=403, detail="Chỉ BOSS được check toàn công ty")
+    else:
+        raise HTTPException(status_code=422, detail="Tạm thời chỉ check kênh của từng người")
 
+    actor_id, session_id = current.id, current_session.id
+    priority = 0 if current.role in {"BOSS", "MANAGER"} else 10
+    # Release the request connection before JobManager opens a transaction.
+    db.commit()
     try:
         run = manager.start_job(
-            requested_by=current.id,
-            requested_session_id=current_session.id,
+            requested_by=actor_id,
+            requested_session_id=session_id,
             trigger_type="MANUAL",
             scope_type=payload.scope_type,
             target_user_id=target_id,
             selected_ids=selected_ids,
-            priority=0 if current.role in {"BOSS", "MANAGER"} else 10,
+            priority=priority,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2010,7 +2125,7 @@ def current_check_run(
 
 
 @app.post("/api/check-runs/{run_id}/stop")
-async def stop_check_run(
+def stop_check_run(
     run_id: str,
     request: Request,
     db: Session = Depends(get_db),
@@ -2068,7 +2183,7 @@ def get_settings(db: Session = Depends(get_db), current: User = Depends(get_curr
 
 
 @app.patch("/api/settings")
-async def update_settings(
+def update_settings(
     payload: SettingsUpdateRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -2079,6 +2194,8 @@ async def update_settings(
     if row is None:
         raise HTTPException(status_code=500, detail="Thiếu app_settings")
     values = payload.model_dump(exclude_unset=True)
+    if values.get("auto_check_enabled"):
+        raise HTTPException(status_code=422, detail="Check toàn công ty tự động đang tạm tắt")
     totp_schedule_fields = {
         "totp_time_restriction_enabled",
         "totp_restricted_roles",
@@ -2105,7 +2222,7 @@ async def update_settings(
         row.next_auto_check_at = None
     write_audit(db, request, boss, "SETTINGS_UPDATED", "APP_SETTINGS", 1, {"fields": sorted(values)})
     db.commit()
-    await ws_manager.broadcast("settings_updated", {"updated_by": str(boss.id)})
+    publish_ws("broadcast", "settings_updated", {"updated_by": str(boss.id)})
     return {
         "success": True,
         "message": "Đã lưu. Thay đổi tổng worker có hiệu lực hoàn toàn sau khi restart server.",
@@ -2183,7 +2300,7 @@ def list_sessions(
 
 
 @app.delete("/api/sessions/{session_id}")
-async def revoke_session(
+def revoke_session(
     session_id: str,
     request: Request,
     db: Session = Depends(get_db),
@@ -2216,7 +2333,7 @@ async def revoke_session(
     if is_current:
         request.session.clear()
     db.commit()
-    await ws_manager.send_sessions(
+    publish_ws("send_sessions",
         {str(target.id)}, "session_revoked", {"reason": "Phiên đăng nhập đã được thu hồi"}
     )
     return {"success": True, "current_session_revoked": is_current}
@@ -2254,7 +2371,7 @@ def list_audit_logs(
 
 
 @app.post("/api/system/announce-update")
-async def announce_client_update(
+def announce_client_update(
     payload: SystemUpdateAnnouncementRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -2280,7 +2397,7 @@ async def announce_client_update(
     )
     db.commit()
 
-    await ws_manager.broadcast(
+    publish_ws("broadcast",
         "client_update_required",
         {
             "message": "Web vừa có bản cập nhật mới. Vui lòng tải lại trang.",
@@ -2312,24 +2429,10 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     try:
-        with db_session() as db:
-            user = db.get(User, parsed_user_id)
-            active_session = db.get(
-                UserSession,
-                parsed_session_id,
-            )
-
-            if (
-                user is None
-                or not user.is_active
-                or active_session is None
-                or active_session.user_id != user.id
-                or active_session.revoked_at is not None
-                or active_session.expires_at <= utcnow()
-            ):
-                await websocket.close(code=4401)
-                return
-
+        valid = await asyncio.to_thread(validate_websocket_session, parsed_user_id, parsed_session_id)
+        if not valid:
+            await websocket.close(code=4401)
+            return
     except Exception:
         await websocket.close(code=1011)
         return
@@ -2362,22 +2465,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if now_monotonic - last_database_touch >= 180:
                 try:
-                    with db_session() as db:
-                        active_session = db.get(
-                            UserSession,
-                            parsed_session_id,
-                        )
-
-                        if (
-                            active_session is None
-                            or active_session.user_id != parsed_user_id
-                            or active_session.revoked_at is not None
-                            or active_session.expires_at <= utcnow()
-                        ):
-                            await websocket.close(code=4401)
-                            return
-
-                        active_session.last_seen_at = utcnow()
+                    valid = await asyncio.to_thread(
+                        validate_websocket_session, parsed_user_id, parsed_session_id, True
+                    )
+                    if not valid:
+                        await websocket.close(code=4401)
+                        return
 
                     last_database_touch = now_monotonic
 

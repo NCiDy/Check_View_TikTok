@@ -3,6 +3,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Callable
+from threading import BoundedSemaphore
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -15,12 +16,14 @@ from .models import User, UserSession
 
 
 password_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
+password_hash_slots = BoundedSemaphore(2)
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{3,50}$")
 
 
 def hash_password(password: str) -> str:
     validate_password(password)
-    return password_hasher.hash(password)
+    with password_hash_slots:
+        return password_hasher.hash(password)
 
 
 def validate_password(password: str) -> None:
@@ -37,8 +40,11 @@ def validate_login_username(username: str) -> str:
 
 def verify_password(password: str, password_hash: str) -> tuple[bool, str | None]:
     try:
-        valid = password_hasher.verify(password_hash, password)
-        replacement = password_hasher.hash(password) if password_hasher.check_needs_rehash(password_hash) else None
+        # Each Argon2 call allocates ~64 MiB. Bound concurrent logins so a
+        # morning burst cannot exhaust the web process's memory.
+        with password_hash_slots:
+            valid = password_hasher.verify(password_hash, password)
+            replacement = password_hasher.hash(password) if password_hasher.check_needs_rehash(password_hash) else None
         return bool(valid), replacement
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False, None

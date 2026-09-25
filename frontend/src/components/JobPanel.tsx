@@ -22,7 +22,7 @@ export function JobPanel() {
       <div className="job-topline">
         <div>
           <strong>{currentRun.trigger_type === "SCHEDULED" ? "Check tự động" : "Job của bạn"}</strong>
-          <span className={`status-dot status-${currentRun.status.toLowerCase()}`}>{currentRun.status}</span>
+          <span className={`status-dot status-${currentRun.status.toLowerCase()}`}>{({ QUEUED: "Đang chờ", RUNNING: "Đang kiểm tra", COMPLETED: "Đã xử lý", STOPPED: "Đã dừng", FAILED: "Chưa hoàn tất" } as Record<string, string>)[currentRun.status] || currentRun.status}</span>
         </div>
         {done ? (
           <button className="link-button" onClick={() => setCurrentRun(null)}>Đóng</button>
@@ -37,6 +37,7 @@ export function JobPanel() {
         <span>DIE {currentRun.die_count || 0}</span>
         <span>ERROR {currentRun.error_count || 0}</span>
       </div>
+      {currentRun.message && <p role="status">{currentRun.message}</p>}
     </aside>
   );
 }

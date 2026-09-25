@@ -149,7 +149,7 @@ class TikTokAccount(Base):
     avg_sample_views: Mapped[int | None] = mapped_column(BigInteger)
     video_count_sample: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     recent_videos: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSONB, nullable=False, default=list
+        JSONB, nullable=False, default=list, deferred=True
     )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="UNCHECKED")
     previous_status: Mapped[str | None] = mapped_column(Text)

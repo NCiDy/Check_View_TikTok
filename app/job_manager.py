@@ -4,6 +4,8 @@ import concurrent.futures
 import threading
 import time
 import uuid
+import random
+import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -18,11 +20,21 @@ from core.proxy_manager import ProxyManager
 from .config import settings as env_settings
 from .database import db_session
 from .models import AppSettings, CheckRun, Machine, TikTokAccount, User
+from .check_queue import CheckQueue
+from .read_cache import invalidate_reads
 
 
 RETRYABLE_STATUSES = {"TIMEOUT", "HTTP_ERROR", "PARSE_ERROR", "EXCEPTION"}
 MAX_CHECK_WORKERS = 5
 MAX_WORKERS_PER_JOB = 3
+logger = logging.getLogger(__name__)
+
+
+def retryable_result(result):
+    status = result.get("status")
+    if status == "HTTP_ERROR":
+        return result.get("status_code") in {408, 425, 429, 500, 502, 503, 504}
+    return status in {"TIMEOUT", "PARSE_ERROR", "EXCEPTION"}
 
 
 @dataclass
@@ -32,6 +44,7 @@ class InflightCheck:
     latest_applied: bool = False
     auto_applied: bool = False
     cached_outcome: dict[str, Any] | None = None
+    consumers: int = 1
 
 
 class JobManager:
@@ -59,16 +72,15 @@ class JobManager:
                     worker_count = int(app_config.max_total_workers)
         except Exception:
             pass
-        self.executor = concurrent.futures.ThreadPoolExecutor(
+        self.executor = CheckQueue(
             # Reserve database and CPU capacity for interactive web requests.
             max_workers=max(1, min(worker_count, MAX_CHECK_WORKERS)),
-            thread_name_prefix="tiktok-check",
         )
         self.job_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(2, min(worker_count * 2, 10)),
+            max_workers=20,
             thread_name_prefix="tiktok-job",
         )
-        self._registry_lock = threading.Lock()
+        self._registry_lock = threading.RLock()
         self._inflight: dict[uuid.UUID, InflightCheck] = {}
         self._stop_events: dict[uuid.UUID, threading.Event] = {}
 
@@ -143,10 +155,26 @@ class JobManager:
         priority: int = 10,
     ) -> dict[str, Any]:
         selected_ids = selected_ids or []
+        if scope_type not in {"USER", "SELECTED"}:
+            raise ValueError("Tạm thời chỉ check kênh của từng người")
         with db_session() as db:
+            if requested_by:
+                # Serialize starts for the same actor, including two sessions.
+                db.execute(select(User.id).where(User.id == requested_by).with_for_update())
+                active = db.scalar(select(CheckRun.id).where(
+                    CheckRun.requested_by == requested_by,
+                    CheckRun.status.in_(("QUEUED", "RUNNING")),
+                ).limit(1))
+                if active:
+                    raise ValueError("Bạn đang có một lượt check chưa hoàn thành")
+            if len(self._stop_events) >= 20:
+                raise ValueError("Hệ thống đang xử lý nhiều lượt check, vui lòng thử lại sau")
             account_ids = self._account_ids_for_scope(
                 db, scope_type, target_user_id, selected_ids
             )
+            account_ids = list(dict.fromkeys(account_ids))
+            if scope_type == "SELECTED" and set(account_ids) != set(selected_ids):
+                raise ValueError("Một số kênh đã bị xóa hoặc không còn tồn tại; hãy tải lại danh sách")
             if not account_ids:
                 raise ValueError("Phạm vi đã chọn chưa có kênh TikTok")
 
@@ -156,7 +184,7 @@ class JobManager:
                 trigger_type=trigger_type,
                 scope_type=scope_type,
                 target_user_id=target_user_id,
-                selected_account_ids=account_ids if scope_type == "SELECTED" else [],
+                selected_account_ids=account_ids,
                 priority=priority,
                 total_accounts=len(account_ids),
                 status="QUEUED",
@@ -198,37 +226,44 @@ class JobManager:
         with self._registry_lock:
             existing = self._inflight.get(account_id)
             if existing and not existing.future.cancelled():
+                existing.consumers += 1
                 return existing
 
-            future = self.executor.submit(self._network_check, account_id, runtime)
+            future = self.executor.submit(self._network_check, account_id, runtime,
+                                          priority=runtime.get("priority", 10))
             record = InflightCheck(future=future)
             self._inflight[account_id] = record
 
-            def remove_when_done(_future):
-                with self._registry_lock:
-                    if self._inflight.get(account_id) is record:
-                        self._inflight.pop(account_id, None)
-
-            future.add_done_callback(remove_when_done)
             return record
 
+    def _release_inflight(self, account_id, record):
+        # Keep the shared result until all jobs have persisted/consumed it,
+        # not merely until the HTTP request finishes.
+        with self._registry_lock:
+            record.consumers -= 1
+            if record.consumers <= 0 and self._inflight.get(account_id) is record:
+                self._inflight.pop(account_id, None)
+
     def _network_check(self, account_id: uuid.UUID, runtime: dict[str, Any]) -> dict[str, Any]:
+        started = time.monotonic()
         with db_session() as db:
-            account = db.get(TikTokAccount, account_id)
-            if account is None:
+            username = db.scalar(select(TikTokAccount.username).where(TikTokAccount.id == account_id))
+            if username is None:
                 return {"status": "EXCEPTION", "error": "Kênh đã bị xóa", "account_id": str(account_id)}
-            username = account.username
 
         result: dict[str, Any] = {}
         for attempt in range(runtime["retry_count"] + 1):
             proxy = self.proxy_manager.get_proxy()
             result = self.checker.check(username, proxy=proxy, timeout=runtime["timeout"])
             result["attempt"] = attempt + 1
-            if result.get("status") not in RETRYABLE_STATUSES:
+            if not retryable_result(result):
                 break
             if attempt < runtime["retry_count"]:
-                time.sleep(min(1.0 + attempt, 3.0))
+                time.sleep(min(2 ** (attempt + 1), 15) + random.uniform(0, 1))
         result["account_id"] = str(account_id)
+        logger.info("checker account=%s status=%s http=%s attempts=%s seconds=%.2f",
+                    account_id, result.get("status"), result.get("status_code"),
+                    result.get("attempt"), time.monotonic() - started)
         return result
 
     def _consume_result(
@@ -248,6 +283,7 @@ class JobManager:
                 record.latest_applied = True
                 record.auto_applied = scheduled
                 record.cached_outcome = outcome
+                invalidate_reads(data_only=True)
                 return outcome
 
             if scheduled and not record.auto_applied:
@@ -330,7 +366,7 @@ class JobManager:
                 .join(Machine, Machine.id == TikTokAccount.machine_id)
                 .join(User, User.id == Machine.owner_id)
                 .where(TikTokAccount.id == account_id)
-                .with_for_update()
+                .with_for_update(of=TikTokAccount)
             ).one_or_none()
             if row is None:
                 return {"account_id": str(account_id), "status": "ERROR", "error": "Kênh đã bị xóa"}
@@ -412,6 +448,19 @@ class JobManager:
                 "error": account.last_error_message,
                 "alerts": alerts if runtime["notifications"] else [],
                 "last_checked_at": now.isoformat(),
+                "nickname": account.nickname,
+                "avatar_url": account.avatar_url,
+                "following": account.following,
+                "total_likes": account.total_likes,
+                "total_sample_views": account.total_sample_views,
+                "avg_sample_views": account.avg_sample_views,
+                "video_count_sample": account.video_count_sample,
+                "previous_status": account.previous_status,
+                "last_successful_checked_at": account.last_successful_checked_at.isoformat() if account.last_successful_checked_at else None,
+                "last_error_code": account.last_error_code,
+                "last_error_message": account.last_error_message,
+                "is_verified": account.is_verified,
+                "leader_id": str(owner.leader_id) if owner.leader_id else None,
             }
 
     def _persist_auto_only(
@@ -427,7 +476,7 @@ class JobManager:
                 .join(Machine, Machine.id == TikTokAccount.machine_id)
                 .join(User, User.id == Machine.owner_id)
                 .where(TikTokAccount.id == account_id)
-                .with_for_update()
+                .with_for_update(of=TikTokAccount)
             ).one_or_none()
             if row is None:
                 return {"account_id": str(account_id), "status": "ERROR", "error": "Kênh đã bị xóa"}
@@ -494,6 +543,7 @@ class JobManager:
         requested_session_id: uuid.UUID | None,
         stop_event: threading.Event,
     ) -> None:
+        pending: dict[concurrent.futures.Future, tuple[uuid.UUID, InflightCheck]] = {}
         try:
             with db_session() as db:
                 runtime = self._runtime_settings(db)
@@ -504,6 +554,7 @@ class JobManager:
                 run.started_at = datetime.now(timezone.utc)
                 db.flush()
                 run_payload = self.serialize_run(run)
+                runtime["priority"] = run.priority
             event_identity = {
                 "requested_by": str(requested_by) if requested_by else None,
                 "requested_session_id": str(requested_session_id) if requested_session_id else None,
@@ -511,13 +562,19 @@ class JobManager:
             self._emit("job_started", {**event_identity, "run": run_payload, "scheduled": scheduled})
 
             queue = deque(account_ids)
-            pending: dict[concurrent.futures.Future, tuple[uuid.UUID, InflightCheck]] = {}
+            completed: set[uuid.UUID] = set()
+            persistence_retries: dict[uuid.UUID, int] = {}
+            counters = {key: 0 for key in ("processed_accounts", "live_count", "die_count",
+                                         "error_count", "follower_changed_count", "new_problem_count")}
+            last_saved = time.monotonic()
             per_job = max(
                 1,
-                min(runtime["max_workers_per_job"], MAX_WORKERS_PER_JOB),
+                min(runtime["max_workers_per_job"], 3 if runtime["priority"] == 0 else 2),
             )
 
-            while (queue or pending) and not stop_event.is_set():
+            # On stop, drain already submitted work so completed requests are
+            # persisted; do not silently drop the last in-flight results.
+            while pending or (queue and not stop_event.is_set()):
                 while queue and len(pending) < per_job and not stop_event.is_set():
                     account_id = queue.popleft()
                     record = self._get_inflight(account_id, runtime)
@@ -536,10 +593,38 @@ class JobManager:
                         raw = future.result()
                     except Exception as exc:
                         raw = {"status": "EXCEPTION", "error": str(exc), "account_id": str(account_id)}
-                    outcome = self._consume_result(
-                        record, account_id, raw, scheduled, requested_by, runtime
-                    )
-                    run_payload = self._update_run(run_id, outcome)
+                    try:
+                        outcome = self._consume_result(
+                            record, account_id, raw, scheduled, requested_by, runtime
+                        )
+                    except Exception:
+                        logger.exception("Cannot persist run=%s account=%s", run_id, account_id)
+                        persistence_retries[account_id] = persistence_retries.get(account_id, 0) + 1
+                        if persistence_retries[account_id] <= 1 and not stop_event.is_set():
+                            queue.append(account_id)
+                        continue
+                    finally:
+                        self._release_inflight(account_id, record)
+                    completed.add(account_id)
+                    counters["processed_accounts"] = len(completed)
+                    result_status = outcome.get("status")
+                    counters[{"LIVE": "live_count", "DIE": "die_count"}.get(result_status, "error_count")] += 1
+                    counters["follower_changed_count"] += int(outcome.get("follower_delta") not in (None, 0))
+                    counters["new_problem_count"] += int(bool(outcome.get("new_problem")))
+                    run_payload = {**run_payload, **counters,
+                                   "progress_percent": round(len(completed) * 100 / len(account_ids), 1)}
+                    if len(completed) % 5 == 0 or time.monotonic() - last_saved >= 2:
+                        try:
+                            with db_session() as db:
+                                run = db.get(CheckRun, run_id)
+                                if run:
+                                    for key, value in counters.items():
+                                        setattr(run, key, value)
+                        except Exception:
+                            # Progress is advisory; a failed progress write must
+                            # not discard remaining account work.
+                            logger.exception("Could not checkpoint run=%s", run_id)
+                        last_saved = time.monotonic()
                     self._emit("job_progress", {
                         **event_identity,
                         "run": run_payload,
@@ -558,9 +643,17 @@ class JobManager:
             with db_session() as db:
                 run = db.get(CheckRun, run_id)
                 if run:
-                    run.status = "STOPPED" if stop_event.is_set() else "COMPLETED"
+                    missing = set(account_ids) - completed
+                    for key, value in counters.items():
+                        setattr(run, key, value)
+                    run.status = "STOPPED" if stop_event.is_set() else ("FAILED" if missing else "COMPLETED")
+                    if missing:
+                        run.message = (f"Đã lưu {len(completed)}/{len(account_ids)} kênh. Chưa xử lý: "
+                                       + ", ".join(str(value) for value in sorted(missing, key=str)))[:1000]
+                    elif counters["error_count"]:
+                        run.message = f"Đã xử lý đủ {len(completed)} kênh; {counters['error_count']} kênh lỗi, có thể retry riêng."
                     run.finished_at = datetime.now(timezone.utc)
-                    if scheduled and not stop_event.is_set():
+                    if scheduled and run.status == "COMPLETED":
                         config = db.get(AppSettings, 1)
                         if config:
                             config.last_auto_check_at = run.finished_at
@@ -568,12 +661,15 @@ class JobManager:
                     payload = self.serialize_run(run)
                 else:
                     payload = {"id": str(run_id), "status": "FAILED"}
-            self._emit("job_finished", {
+            self._emit("job_failed" if payload["status"] == "FAILED" else "job_finished", {
                 **event_identity,
                 "run": payload,
                 "scheduled": scheduled,
             })
-            self._cleanup_old_runs(requested_by)
+            try:
+                self._cleanup_old_runs(requested_by)
+            except Exception:
+                logger.exception("Could not clean old check runs")
         except Exception as exc:
             with db_session() as db:
                 run = db.get(CheckRun, run_id)
@@ -591,6 +687,8 @@ class JobManager:
                 "run": payload,
             })
         finally:
+            for account_id, record in pending.values():
+                self._release_inflight(account_id, record)
             self._stop_events.pop(run_id, None)
 
     @staticmethod

@@ -150,11 +150,44 @@ export function AccountsPage() {
     queryFn: () => api<{ machines: Machine[] }>(`/api/machines?owner_id=${encodeURIComponent(ownerId)}`),
     enabled: Boolean(ownerId && ownerId !== "ALL"),
   });
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 350);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  useEffect(() => {
+    setPage(1);
+    setSelected(new Set());
+  }, [ownerId, machineId, status, condition, metricFilter, sortMode, debouncedSearch]);
+  const accountParams = new URLSearchParams({
+    owner_id: ownerId, machine_id: machineId, status, condition,
+    metric: metricFilter, sort: sortMode, search: debouncedSearch,
+    page: String(page), page_size: "50",
+  });
   const accountsQuery = useQuery({
-    queryKey: ["accounts", ownerId],
-    queryFn: () => api<{ accounts: TikTokAccount[] }>(`/api/accounts?owner_id=${encodeURIComponent(ownerId)}`),
+    queryKey: ["accounts", ownerId, accountParams.toString()],
+    queryFn: ({ signal }) => api<{ accounts: TikTokAccount[]; total: number; page: number; page_size: number }>(
+      `/api/accounts?${accountParams}`, { signal }),
     enabled: Boolean(ownerId),
   });
+  const summaryQuery = useQuery({
+    queryKey: ["account-summary", ownerId],
+    queryFn: ({ signal }) => api<{ summary: ReturnType<typeof accountStats> & { max_followers: number | null } }>(
+      `/api/accounts-summary?owner_id=${encodeURIComponent(ownerId)}`, { signal }),
+    enabled: Boolean(ownerId),
+  });
+  const detailQuery = useQuery({
+    queryKey: ["account-detail", detail?.id],
+    queryFn: ({ signal }) => api<{ account: TikTokAccount }>(`/api/accounts/${detail!.id}`, { signal }),
+    enabled: dialog === "detail" && Boolean(detail?.id),
+    staleTime: 0,
+  });
+  useEffect(() => {
+    if (dialog === "detail" && detailQuery.data && detailQuery.data.account.id === detail?.id) {
+      setDetail(detailQuery.data.account);
+    }
+  }, [detailQuery.data, dialog, detail?.id]);
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: () => api<{ settings: AppSettings }>("/api/settings") });
 
   const owner = usersQuery.data?.users.find((item) => item.id === ownerId);
@@ -209,12 +242,10 @@ export function AccountsPage() {
     )
   );
   const monetizationThreshold = settingsQuery.data?.settings.monetization_follower_threshold ?? 10500;
-  const hasEligibleAccount = (accountsQuery.data?.accounts || []).some(
-    (account) => (account.followers || 0) >= monetizationThreshold
-  );
+  const hasEligibleAccount = (summaryQuery.data?.summary.max_followers ?? 0) >= monetizationThreshold;
   const normalMachines = (machinesQuery.data?.machines || []).filter((machine) => machine.machine_type === "NORMAL");
   const monetizedMachines = (machinesQuery.data?.machines || []).filter((machine) => machine.machine_type === "MONETIZED");
-  const summary = accountStats(accountsQuery.data?.accounts || []);
+  const summary = summaryQuery.data?.summary || accountStats([]);
 
   const canEditCondition = (account: TikTokAccount) => Boolean(
     user && (
@@ -428,6 +459,7 @@ export function AccountsPage() {
   async function refresh() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["accounts"] }),
+      queryClient.invalidateQueries({ queryKey: ["account-summary"] }),
       queryClient.invalidateQueries({ queryKey: ["machines"] }),
       queryClient.invalidateQueries({ queryKey: ["users"] }),
       queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
@@ -456,6 +488,7 @@ export function AccountsPage() {
       await queryClient.cancelQueries({ queryKey: ["accounts"] });
       const previous = queryClient.getQueriesData<{ accounts: TikTokAccount[] }>({ queryKey: ["accounts"] });
       queryClient.setQueriesData<{ accounts: TikTokAccount[] }>({ queryKey: ["accounts"] }, (old) => old ? {
+        ...old,
         accounts: old.accounts.map((account) => account.id === accountId ? { ...account, channel_condition: condition } : account),
       } : old);
       return { previous };
@@ -673,11 +706,10 @@ export function AccountsPage() {
 
       <main className="page-stack min-width-0">
         <div className="page-heading compact">
-          <div><p className="eyebrow">DANH SÁCH KÊNH</p><h1>{ownerId === "ALL" ? "Toàn công ty" : owner?.full_name || "Đang tải…"}</h1><p>{ownerId === "ALL" ? `${filtered.length} kênh có quyền xem` : `${owner?.machine_count || 0} máy · ${owner?.account_count || 0} kênh`}</p></div>
+          <div><p className="eyebrow">DANH SÁCH KÊNH</p><h1>{ownerId === "ALL" ? "Toàn công ty" : owner?.full_name || "Đang tải…"}</h1><p>{ownerId === "ALL" ? `${accountsQuery.data?.total ?? 0} kênh có quyền xem` : `${owner?.machine_count || 0} máy · ${owner?.account_count || 0} kênh`}</p></div>
           <div className="heading-actions">
             {canAdd && <><button className="button secondary" onClick={() => setDialog("machine")}><Plus size={16} /> Thêm máy</button>{hasEligibleAccount && <button className="button secondary monetized-button" onClick={() => setDialog("monetized-machine")}><Crown size={16} /> Thêm máy BKT</button>}<button className="button secondary" disabled={!normalMachines.length} onClick={() => setDialog("accounts")}><Plus size={16} /> Thêm kênh</button></>}
             {selected.size > 0 && canCheck && <button className="button secondary" onClick={() => check.mutate({ scope_type: "SELECTED", account_ids: [...selected] })}>Check {selected.size} kênh</button>}
-            {user?.role === "BOSS" && owner?.role === "LEADER" && <button className="button secondary" onClick={() => window.confirm(`Check toàn bộ nhóm của ${owner.full_name}?`) && check.mutate({ scope_type: "LEADER_GROUP", target_user_id: owner.id })}>Check cả nhóm</button>}
             {ownerId !== "ALL" && canCheck && <button className="button primary" onClick={() => check.mutate({ scope_type: "USER", target_user_id: ownerId })}>Check người này</button>}
           </div>
         </div>
@@ -843,9 +875,17 @@ export function AccountsPage() {
                   <td><button className="icon-button" title={account.has_totp ? "Lấy mã 2FA" : "Thiết lập 2FA"} disabled={!canEditCondition(account)} onClick={() => { setDetail(account); setDialog("totp"); }}><LockKeyhole size={16} /></button></td>
                   <td><button className="icon-button" title="Chi tiết" onClick={() => { setDetail(account); setDialog("detail"); }}><Eye size={17} /></button></td>
                 </tr>)}
-                {!filtered.length && <tr><td colSpan={10}><div className="empty-state">Chưa có kênh phù hợp.</div></td></tr>}
+                {!filtered.length && <tr><td colSpan={10}><div className="empty-state">{accountsQuery.isPending ? "Đang tải kênh…" : accountsQuery.isError ? (accountsQuery.error as Error).message : "Chưa có kênh phù hợp."}</div></td></tr>}
               </tbody>
             </table>
+          </div>
+          <div className="settings-footer" style={{ padding: "16px" }}>
+            <span>Trang {accountsQuery.data?.page || page} / {Math.max(1, Math.ceil((accountsQuery.data?.total || 0) / 50))} · {accountsQuery.data?.total || 0} kênh · Chọn tất cả chỉ áp dụng trang này</span>
+            <div className="modal-actions">
+              <button className="button secondary" disabled={page <= 1 || accountsQuery.isFetching} onClick={() => { setPage((p) => p - 1); setSelected(new Set()); }}>Trước</button>
+              <button className="button secondary" disabled={page * 50 >= (accountsQuery.data?.total || 0) || accountsQuery.isFetching} onClick={() => { setPage((p) => p + 1); setSelected(new Set()); }}>Sau</button>
+              <button className="button secondary" onClick={() => void accountsQuery.refetch()} disabled={accountsQuery.isFetching}>Làm mới</button>
+            </div>
           </div>
         </section>
       </main>
@@ -857,6 +897,8 @@ export function AccountsPage() {
           onClose={() => setDialog(null)}
           wide
         >
+          {detailQuery.isPending && <p>Đang tải chi tiết và video…</p>}
+          {detailQuery.isError && <p role="alert">{(detailQuery.error as Error).message}</p>}
           <div className="detail-profile">
             <Avatar
               name={detail.nickname || detail.username}

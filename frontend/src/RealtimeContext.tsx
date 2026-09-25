@@ -8,9 +8,9 @@ import {
   useState,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { notify } from "./api";
+import { api, notify } from "./api";
 import { useAuth } from "./AuthContext";
-import type { CheckRun } from "./types";
+import type { CheckRun, TikTokAccount } from "./types";
 
 interface RealtimeState {
   connected: boolean;
@@ -90,15 +90,19 @@ export function RealtimeProvider({
       refreshOwnersRef.current.clear();
 
       const accountOnly = [...sources].every((item) =>
-        ["account_condition", "check_run"].includes(item)
+        ["account_condition", "check_run", "account_patch", "dashboard_only"].includes(item)
       );
 
       void queryClient.invalidateQueries({
         queryKey: ["dashboard"],
       });
 
+      void queryClient.invalidateQueries({ queryKey: ["account-summary"] });
+
       void queryClient.invalidateQueries({
+        refetchType: [...sources].every((item) => ["account_patch", "dashboard_only"].includes(item)) ? "none" : "active",
         predicate: (query) => {
+          if (sources.size === 1 && sources.has("dashboard_only")) return false;
           if (query.queryKey[0] !== "accounts") return false;
           if (!owners.size) return true;
           const viewedOwner = String(query.queryKey[1] || "");
@@ -127,7 +131,7 @@ export function RealtimeProvider({
           queryKey: ["departments"],
         });
       }
-    }, 1_200 + Math.floor(Math.random() * 1_800));
+    }, 8_000 + Math.floor(Math.random() * 4_000));
   }, [queryClient]);
 
   useEffect(() => {
@@ -138,6 +142,7 @@ export function RealtimeProvider({
     let pingTimer: number | null = null;
     let reconnectTimer: number | null = null;
     let reconnectAttempt = 0;
+    let wasConnected = false;
 
     function clearPingTimer() {
       if (pingTimer !== null) {
@@ -226,6 +231,11 @@ export function RealtimeProvider({
 
         if (message.type === "connected") {
           void refreshMe();
+          if (wasConnected) refreshSharedData("reconnect");
+          wasConnected = true;
+          void api<{ runs: CheckRun[] }>("/api/check-runs/current").then(({ runs }) => {
+            if (!disposed && runs?.length) setCurrentRun(runs[0]);
+          }).catch(() => {});
         }
 
         if (
@@ -253,8 +263,8 @@ export function RealtimeProvider({
 
             if (message.type === "job_finished") {
               notify(
-                "Job check đã hoàn thành",
-                "success"
+                run.message || (run.status === "STOPPED" ? "Đã dừng lượt check" : "Đã xử lý đủ số kênh"),
+                run.status === "STOPPED" || run.error_count ? "info" : "success"
               );
             }
 
@@ -266,6 +276,22 @@ export function RealtimeProvider({
             }
           }
         }
+
+        if (message.type === "account_updated") {
+          const patch = data.account as Partial<TikTokAccount> | undefined;
+          if (patch?.id) {
+            queryClient.setQueriesData<{ accounts: TikTokAccount[] }>({ queryKey: ["accounts"] }, (old) =>
+              old ? { ...old, accounts: old.accounts.map((account) => {
+                if (account.id !== patch.id) return account;
+                if (account.last_checked_at && patch.last_checked_at &&
+                    Date.parse(account.last_checked_at) > Date.parse(patch.last_checked_at)) return account;
+                return { ...account, ...patch };
+              }) } : old);
+            void queryClient.invalidateQueries({ queryKey: ["account-detail", patch.id] });
+            refreshSharedData("account_patch", patch.owner_id || "");
+          }
+        }
+        if (message.type === "dashboard_changed") refreshSharedData("dashboard_only");
 
         if (message.type === "data_updated") {
           refreshSharedData(

@@ -4,7 +4,6 @@ import { CheckCircle2, Clock3, Crown, Radio, ShieldAlert, TrendingUp, Trophy, Us
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { useAuth } from "../AuthContext";
-import { useStartCheck } from "../hooks/useStartCheck";
 import type { Dashboard } from "../types";
 import { formatNumber, formatTime } from "../utils";
 
@@ -20,7 +19,6 @@ const COMPOSITION_COLORS = {
 export function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const check = useStartCheck();
   const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
   const { data, isLoading } = useQuery({
     queryKey: ["dashboard"],
@@ -81,11 +79,7 @@ export function DashboardPage() {
     <div className="page-stack">
       <div className="page-heading">
         <div><p className="eyebrow">TỔNG QUAN</p><h1>{title}</h1><p>Cập nhật trực tiếp từ Supabase và checker TikTok.</p></div>
-        {isCompanyAdmin && (
-          <button className="button primary" disabled={check.isPending} onClick={() => {
-            if (window.confirm("Bắt đầu check toàn bộ kênh trong công ty?")) check.mutate({ scope_type: "COMPANY" });
-          }}><Radio size={17} /> Check toàn công ty</button>
-        )}
+
       </div>
 
       <section className="metric-grid">

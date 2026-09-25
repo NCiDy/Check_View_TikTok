@@ -51,7 +51,7 @@ def configure_database(raw_url: str | None = None) -> Engine:
             "pool_reset_on_return": "rollback",
             # Supabase transaction pooling (port 6543) does not support
             # prepared statements. This is also safe in session mode.
-            "connect_args": {"prepare_threshold": None},
+            "connect_args": {"prepare_threshold": None, "connect_timeout": 5},
         })
 
     _engine = create_engine(url, **engine_kwargs)

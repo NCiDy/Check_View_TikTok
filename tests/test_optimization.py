@@ -55,7 +55,7 @@ def test_priority_aging_prevents_starvation(monkeypatch):
 
 @pytest.mark.parametrize("status,http,expected", [
     ("LIVE", 200, False), ("NOT_FOUND", 404, False),
-    ("HTTP_ERROR", 403, False), ("HTTP_ERROR", 429, True),
+    ("HTTP_ERROR", 403, True), ("HTTP_ERROR", 429, True),
     ("HTTP_ERROR", 503, True), ("TIMEOUT", None, True),
 ])
 def test_retry_classifies_errors(status, http, expected):
@@ -66,6 +66,81 @@ def test_only_selected_scope_persists_selected_account_ids():
     account_ids = [uuid.uuid4(), uuid.uuid4()]
     assert selected_ids_for_run("SELECTED", account_ids) == account_ids
     assert selected_ids_for_run("USER", account_ids) == []
+
+
+def test_temporary_tiktok_403_is_retryable():
+    assert retryable_result({"status": "HTTP_ERROR", "status_code": 403}) is True
+
+
+def test_transient_network_error_retries_after_fast_pass(monkeypatch):
+    import app.job_manager as module
+
+    manager = JobManager.__new__(JobManager)
+    ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
+    run_id = uuid.uuid4()
+    run = CheckRun(
+        id=run_id,
+        requested_by=uuid.uuid4(),
+        requested_session_id=None,
+        trigger_type="MANUAL",
+        scope_type="USER",
+        target_user_id=uuid.uuid4(),
+        priority=0,
+        total_accounts=len(ids),
+        status="QUEUED",
+        created_at=datetime.now(timezone.utc),
+        processed_accounts=0,
+        live_count=0,
+        die_count=0,
+        error_count=0,
+        follower_changed_count=0,
+        new_problem_count=0,
+    )
+    db = MagicMock()
+    db.get.return_value = run
+
+    @contextmanager
+    def session():
+        yield db
+
+    monkeypatch.setattr(module, "db_session", session)
+    monkeypatch.setattr(module.random, "uniform", lambda *_: 0)
+    manager._runtime_settings = lambda _: {
+        "max_workers_per_job": 5,
+        "delay": 0,
+        "retry_count": 1,
+        "voice_notifications": False,
+    }
+    manager._cleanup_old_runs = lambda _: None
+    manager._release_inflight = lambda *args: None
+    manager._emit = lambda *args: None
+    manager._stop_events = {run_id: threading.Event()}
+    submitted = []
+    attempts = {}
+
+    def check(account_id, runtime):
+        submitted.append(account_id)
+        attempts[account_id] = attempts.get(account_id, 0) + 1
+        future = Future()
+        if account_id == ids[1] and attempts[account_id] == 1:
+            future.set_result({"status": "HTTP_ERROR", "status_code": 403})
+        else:
+            future.set_result({"status": "LIVE"})
+        return InflightCheck(future)
+
+    manager._get_inflight = check
+    manager._consume_result = lambda _record, account_id, raw, *_: {
+        "account_id": str(account_id),
+        "status": raw["status"],
+    }
+    manager._run_job(run_id, ids, False, run.requested_by, None, manager._stop_events[run_id])
+
+    assert submitted[:3] == ids
+    assert submitted[3:] == [ids[1]]
+    assert run.status == "COMPLETED"
+    assert run.processed_accounts == 3
+    assert run.live_count == 3
+    assert run.error_count == 0
 
 
 def test_list_orm_does_not_read_video_json():

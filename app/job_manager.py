@@ -26,14 +26,20 @@ from .read_cache import invalidate_reads
 
 RETRYABLE_STATUSES = {"TIMEOUT", "HTTP_ERROR", "PARSE_ERROR", "EXCEPTION"}
 MAX_CHECK_WORKERS = 5
-MAX_WORKERS_PER_JOB = 3
+MAX_WORKERS_PER_JOB = 5
+RETRY_COOLDOWN_MIN_SECONDS = 5.0
+RETRY_COOLDOWN_MAX_SECONDS = 10.0
+RETRY_DELAY_MIN_SECONDS = 2.0
+RETRY_DELAY_MAX_SECONDS = 4.0
 logger = logging.getLogger(__name__)
 
 
 def retryable_result(result):
     status = result.get("status")
     if status == "HTTP_ERROR":
-        return result.get("status_code") in {408, 425, 429, 500, 502, 503, 504}
+        # TikTok frequently returns a short-lived 403 from its public embed
+        # endpoint. Retry it later, after the rest of the batch has finished.
+        return result.get("status_code") in {403, 408, 425, 429, 500, 502, 503, 504}
     return status in {"TIMEOUT", "PARSE_ERROR", "EXCEPTION"}
 
 
@@ -281,15 +287,9 @@ class JobManager:
             if username is None:
                 return {"status": "EXCEPTION", "error": "Kênh đã bị xóa", "account_id": str(account_id)}
 
-        result: dict[str, Any] = {}
-        for attempt in range(runtime["retry_count"] + 1):
-            proxy = self.proxy_manager.get_proxy()
-            result = self.checker.check(username, proxy=proxy, timeout=runtime["timeout"])
-            result["attempt"] = attempt + 1
-            if not retryable_result(result):
-                break
-            if attempt < runtime["retry_count"]:
-                time.sleep(min(2 ** (attempt + 1), 15) + random.uniform(0, 1))
+        proxy = self.proxy_manager.get_proxy()
+        result = self.checker.check(username, proxy=proxy, timeout=runtime["timeout"])
+        result["attempt"] = 1
         result["account_id"] = str(account_id)
         logger.info("checker account=%s status=%s http=%s attempts=%s seconds=%.2f",
                     account_id, result.get("status"), result.get("status_code"),
@@ -592,6 +592,8 @@ class JobManager:
             self._emit("job_started", {**event_identity, "run": run_payload, "scheduled": scheduled})
 
             queue = deque(account_ids)
+            retry_queue: deque[uuid.UUID] = deque()
+            retry_phase = False
             completed: set[uuid.UUID] = set()
             persistence_retries: dict[uuid.UUID, int] = {}
             counters = {key: 0 for key in ("processed_accounts", "live_count", "die_count",
@@ -599,17 +601,48 @@ class JobManager:
             last_saved = time.monotonic()
             per_job = max(
                 1,
-                min(runtime["max_workers_per_job"], 3 if runtime["priority"] == 0 else 2),
+                min(
+                    runtime["max_workers_per_job"],
+                    MAX_WORKERS_PER_JOB if runtime["priority"] == 0 else 3,
+                ),
             )
 
             # On stop, drain already submitted work so completed requests are
             # persisted; do not silently drop the last in-flight results.
-            while pending or (queue and not stop_event.is_set()):
-                while queue and len(pending) < per_job and not stop_event.is_set():
+            while pending or ((queue or retry_queue) and not stop_event.is_set()):
+                if (
+                    not pending
+                    and not queue
+                    and retry_queue
+                    and not retry_phase
+                    and not stop_event.is_set()
+                ):
+                    retry_phase = True
+                    cooldown = random.uniform(
+                        RETRY_COOLDOWN_MIN_SECONDS,
+                        RETRY_COOLDOWN_MAX_SECONDS,
+                    )
+                    logger.info(
+                        "retrying run=%s transient_errors=%s after=%.1fs",
+                        run_id,
+                        len(retry_queue),
+                        cooldown,
+                    )
+                    time.sleep(cooldown)
+                    queue.extend(retry_queue)
+                    retry_queue.clear()
+
+                active_limit = 1 if retry_phase else per_job
+                while queue and len(pending) < active_limit and not stop_event.is_set():
                     account_id = queue.popleft()
                     record = self._get_inflight(account_id, runtime)
                     pending[record.future] = (account_id, record)
-                    if runtime["delay"] > 0:
+                    if retry_phase:
+                        time.sleep(random.uniform(
+                            RETRY_DELAY_MIN_SECONDS,
+                            RETRY_DELAY_MAX_SECONDS,
+                        ))
+                    elif runtime["delay"] > 0:
                         time.sleep(runtime["delay"])
 
                 if not pending:
@@ -623,6 +656,19 @@ class JobManager:
                         raw = future.result()
                     except Exception as exc:
                         raw = {"status": "EXCEPTION", "error": str(exc), "account_id": str(account_id)}
+
+                    # Do not persist a temporary error or immediately hit the
+                    # same channel again. Finish the fast pass first, then
+                    # retry transient failures once at a deliberately slower
+                    # pace. The account is counted only after its final result.
+                    if (
+                        not retry_phase
+                        and runtime.get("retry_count", 0) > 0
+                        and retryable_result(raw)
+                    ):
+                        retry_queue.append(account_id)
+                        self._release_inflight(account_id, record)
+                        continue
                     try:
                         outcome = self._consume_result(
                             record, account_id, raw, scheduled, requested_by, runtime

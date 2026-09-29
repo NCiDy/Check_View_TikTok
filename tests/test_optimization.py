@@ -1,6 +1,5 @@
 import threading
 import uuid
-from collections import deque
 from concurrent.futures import Future
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -15,7 +14,6 @@ from app.check_queue import CheckQueue
 from app.job_manager import (
     InflightCheck,
     JobManager,
-    adaptive_worker_limit,
     retry_worker_limit,
     retryable_result,
     selected_ids_for_run,
@@ -80,16 +78,10 @@ def test_temporary_tiktok_403_is_retryable():
     assert retryable_result({"status": "HTTP_ERROR", "status_code": 403}) is True
 
 
-def test_retry_worker_limits_are_fast_then_cautious():
+def test_retry_worker_limits_prioritize_speed():
     assert retry_worker_limit(0, 5) == 5
-    assert retry_worker_limit(1, 5) == 3
-    assert retry_worker_limit(2, 5) == 2
-
-
-def test_adaptive_worker_limit_reacts_to_recent_failures():
-    assert adaptive_worker_limit(5, deque([0, 0, 0, 0, 0], maxlen=10)) == 5
-    assert adaptive_worker_limit(5, deque([1, 0, 0, 0, 0], maxlen=10)) == 3
-    assert adaptive_worker_limit(5, deque([1, 1, 0, 0, 0], maxlen=10)) == 2
+    assert retry_worker_limit(1, 5) == 5
+    assert retry_worker_limit(2, 5) == 3
 
 
 def test_transient_network_error_retries_after_fast_pass(monkeypatch):

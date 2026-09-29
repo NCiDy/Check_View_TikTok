@@ -27,14 +27,10 @@ from .read_cache import invalidate_reads
 RETRYABLE_STATUSES = {"TIMEOUT", "HTTP_ERROR", "PARSE_ERROR", "EXCEPTION"}
 MAX_CHECK_WORKERS = 5
 MAX_WORKERS_PER_JOB = 5
-RETRY_COOLDOWN_MIN_SECONDS = 5.0
-RETRY_COOLDOWN_MAX_SECONDS = 10.0
-FINAL_RETRY_COOLDOWN_MIN_SECONDS = 20.0
-FINAL_RETRY_COOLDOWN_MAX_SECONDS = 30.0
-RETRY_DELAY_MIN_SECONDS = 0.3
-RETRY_DELAY_MAX_SECONDS = 0.7
-FINAL_RETRY_DELAY_MIN_SECONDS = 0.7
-FINAL_RETRY_DELAY_MAX_SECONDS = 1.2
+RETRY_COOLDOWN_MIN_SECONDS = 2.0
+RETRY_COOLDOWN_MAX_SECONDS = 3.0
+FINAL_RETRY_COOLDOWN_MIN_SECONDS = 5.0
+FINAL_RETRY_COOLDOWN_MAX_SECONDS = 8.0
 logger = logging.getLogger(__name__)
 
 
@@ -48,24 +44,10 @@ def retryable_result(result):
 
 
 def retry_worker_limit(retry_round: int, per_job: int) -> int:
-    """Keep the fast pass quick, then reduce pressure on TikTok per retry."""
-    if retry_round <= 0:
+    """Use the whole pool for the fast pass and first retry."""
+    if retry_round <= 1:
         return per_job
-    if retry_round == 1:
-        return min(3, per_job)
-    return min(2, per_job)
-
-
-def adaptive_worker_limit(per_job: int, recent_failures: deque[int]) -> int:
-    """React to a short burst without permanently slowing healthy jobs."""
-    if len(recent_failures) < 5:
-        return per_job
-    failure_rate = sum(recent_failures) / len(recent_failures)
-    if failure_rate >= 0.40:
-        return min(2, per_job)
-    if failure_rate >= 0.20:
-        return min(3, per_job)
-    return per_job
+    return min(3, per_job)
 
 
 def selected_ids_for_run(scope_type: str, account_ids: list[uuid.UUID]) -> list[uuid.UUID]:
@@ -620,8 +602,6 @@ class JobManager:
             retry_queue: deque[uuid.UUID] = deque()
             retry_round = 0
             max_retry_rounds = max(0, min(int(runtime.get("retry_count", 0)), 2))
-            recent_failures: deque[int] = deque(maxlen=10)
-            recent_blocks: deque[int] = deque(maxlen=10)
             completed: set[uuid.UUID] = set()
             persistence_retries: dict[uuid.UUID, int] = {}
             counters = {key: 0 for key in ("processed_accounts", "live_count", "die_count",
@@ -667,49 +647,17 @@ class JobManager:
                     time.sleep(cooldown)
                     queue.extend(retry_queue)
                     retry_queue.clear()
-                    recent_failures.clear()
-                    recent_blocks.clear()
 
                 active_limit = retry_worker_limit(retry_round, per_job)
-                if retry_round == 0:
-                    active_limit = adaptive_worker_limit(per_job, recent_failures)
-
-                # Several 403/429 responses in one short window usually mean
-                # the shared outbound IP is being throttled. Pause this job
-                # thread once instead of spending every retry immediately.
-                if (
-                    retry_round == 0
-                    and not pending
-                    and queue
-                    and len(recent_blocks) >= 5
-                    and sum(recent_blocks) >= 3
-                ):
-                    cooldown = random.uniform(
-                        RETRY_COOLDOWN_MIN_SECONDS,
-                        RETRY_COOLDOWN_MAX_SECONDS,
-                    )
-                    logger.warning(
-                        "pausing run=%s after TikTok throttle burst for %.1fs",
-                        run_id,
-                        cooldown,
-                    )
-                    time.sleep(cooldown)
-                    recent_failures.clear()
-                    recent_blocks.clear()
 
                 while queue and len(pending) < active_limit and not stop_event.is_set():
                     account_id = queue.popleft()
                     attempt_runtime = {**runtime, "attempt": retry_round + 1}
                     record = self._get_inflight(account_id, attempt_runtime)
                     pending[record.future] = (account_id, record)
-                    if retry_round == 1:
-                        time.sleep(random.uniform(RETRY_DELAY_MIN_SECONDS, RETRY_DELAY_MAX_SECONDS))
-                    elif retry_round >= 2:
-                        time.sleep(random.uniform(
-                            FINAL_RETRY_DELAY_MIN_SECONDS,
-                            FINAL_RETRY_DELAY_MAX_SECONDS,
-                        ))
-                    elif runtime["delay"] > 0:
+                    # Priority Manager/Boss checks run continuously. Keep the
+                    # configurable delay only for normal-priority jobs.
+                    if retry_round == 0 and runtime["priority"] != 0 and runtime["delay"] > 0:
                         time.sleep(runtime["delay"])
 
                 if not pending:
@@ -725,13 +673,6 @@ class JobManager:
                         raw = {"status": "EXCEPTION", "error": str(exc), "account_id": str(account_id)}
 
                     is_retryable = retryable_result(raw)
-                    if retry_round == 0:
-                        recent_failures.append(int(is_retryable))
-                        recent_blocks.append(int(
-                            raw.get("status") == "HTTP_ERROR"
-                            and raw.get("status_code") in {403, 429}
-                        ))
-
                     # Finish each pass before retrying transient failures.
                     # retry_count=2 now correctly means three total attempts,
                     # matching the accurate behaviour of the older checker.

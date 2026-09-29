@@ -1,6 +1,8 @@
 import re
 import json
 import time
+import threading
+from html import unescape
 from typing import Dict, Any, Optional, List
 from curl_cffi import requests
 
@@ -22,6 +24,19 @@ class TikTokChecker:
         "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1"
     }
+
+    def __init__(self):
+        # A curl_cffi Session reuses DNS/TLS/TCP connections. Keep one session
+        # per checker thread because Session objects are not shared across
+        # workers safely.
+        self._thread_local = threading.local()
+
+    def _session(self):
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            self._thread_local.session = session
+        return session
 
     @staticmethod
     def clean_username(raw_input: str) -> str:
@@ -87,7 +102,7 @@ class TikTokChecker:
 
         start_time = time.time()
         try:
-            r = requests.get(
+            r = self._session().get(
                 url,
                 headers=self.DEFAULT_HEADERS,
                 impersonate="chrome124",
@@ -132,7 +147,13 @@ class TikTokChecker:
                     "error": "Không thể phân tích dữ liệu SSR (Có thể IP bị hạn chế)"
                 }
 
-            data = json.loads(match.group(1))
+            state_text = match.group(1).strip()
+            try:
+                data = json.loads(state_text)
+            except json.JSONDecodeError:
+                # Some edge responses HTML-escape the inline JSON. Supporting
+                # both forms avoids false PARSE_ERROR without another request.
+                data = json.loads(unescape(state_text))
             source = data.get("source", {})
             data_dict = source.get("data", {})
             

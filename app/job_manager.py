@@ -29,8 +29,12 @@ MAX_CHECK_WORKERS = 5
 MAX_WORKERS_PER_JOB = 5
 RETRY_COOLDOWN_MIN_SECONDS = 5.0
 RETRY_COOLDOWN_MAX_SECONDS = 10.0
+FINAL_RETRY_COOLDOWN_MIN_SECONDS = 20.0
+FINAL_RETRY_COOLDOWN_MAX_SECONDS = 30.0
 RETRY_DELAY_MIN_SECONDS = 0.3
 RETRY_DELAY_MAX_SECONDS = 0.7
+FINAL_RETRY_DELAY_MIN_SECONDS = 0.7
+FINAL_RETRY_DELAY_MAX_SECONDS = 1.2
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +45,27 @@ def retryable_result(result):
         # endpoint. Retry it later, after the rest of the batch has finished.
         return result.get("status_code") in {403, 408, 425, 429, 500, 502, 503, 504}
     return status in {"TIMEOUT", "PARSE_ERROR", "EXCEPTION"}
+
+
+def retry_worker_limit(retry_round: int, per_job: int) -> int:
+    """Keep the fast pass quick, then reduce pressure on TikTok per retry."""
+    if retry_round <= 0:
+        return per_job
+    if retry_round == 1:
+        return min(3, per_job)
+    return min(2, per_job)
+
+
+def adaptive_worker_limit(per_job: int, recent_failures: deque[int]) -> int:
+    """React to a short burst without permanently slowing healthy jobs."""
+    if len(recent_failures) < 5:
+        return per_job
+    failure_rate = sum(recent_failures) / len(recent_failures)
+    if failure_rate >= 0.40:
+        return min(2, per_job)
+    if failure_rate >= 0.20:
+        return min(3, per_job)
+    return per_job
 
 
 def selected_ids_for_run(scope_type: str, account_ids: list[uuid.UUID]) -> list[uuid.UUID]:
@@ -289,7 +314,7 @@ class JobManager:
 
         proxy = self.proxy_manager.get_proxy()
         result = self.checker.check(username, proxy=proxy, timeout=runtime["timeout"])
-        result["attempt"] = 1
+        result["attempt"] = int(runtime.get("attempt", 1))
         result["account_id"] = str(account_id)
         logger.info("checker account=%s status=%s http=%s attempts=%s seconds=%.2f",
                     account_id, result.get("status"), result.get("status_code"),
@@ -593,7 +618,10 @@ class JobManager:
 
             queue = deque(account_ids)
             retry_queue: deque[uuid.UUID] = deque()
-            retry_phase = False
+            retry_round = 0
+            max_retry_rounds = max(0, min(int(runtime.get("retry_count", 0)), 2))
+            recent_failures: deque[int] = deque(maxlen=10)
+            recent_blocks: deque[int] = deque(maxlen=10)
             completed: set[uuid.UUID] = set()
             persistence_retries: dict[uuid.UUID, int] = {}
             counters = {key: 0 for key in ("processed_accounts", "live_count", "die_count",
@@ -614,17 +642,23 @@ class JobManager:
                     not pending
                     and not queue
                     and retry_queue
-                    and not retry_phase
                     and not stop_event.is_set()
                 ):
-                    retry_phase = True
-                    cooldown = random.uniform(
-                        RETRY_COOLDOWN_MIN_SECONDS,
-                        RETRY_COOLDOWN_MAX_SECONDS,
-                    )
+                    retry_round += 1
+                    if retry_round == 1:
+                        cooldown = random.uniform(
+                            RETRY_COOLDOWN_MIN_SECONDS,
+                            RETRY_COOLDOWN_MAX_SECONDS,
+                        )
+                    else:
+                        cooldown = random.uniform(
+                            FINAL_RETRY_COOLDOWN_MIN_SECONDS,
+                            FINAL_RETRY_COOLDOWN_MAX_SECONDS,
+                        )
                     logger.info(
-                        "retrying run=%s transient_errors=%s after=%.1fs",
+                        "retrying run=%s round=%s transient_errors=%s after=%.1fs",
                         run_id,
+                        retry_round,
                         len(retry_queue),
                         cooldown,
                     )
@@ -632,15 +666,21 @@ class JobManager:
                     queue.extend(retry_queue)
                     retry_queue.clear()
 
-                active_limit = 1 if retry_phase else per_job
+                # The first pass runs at the full five-worker speed. Deferred
+                # retries stay concurrent too, but use three workers to avoid
+                # immediately hammering TikTok again after a temporary block.
+                active_limit = min(3, per_job) if retry_phase else per_job
                 while queue and len(pending) < active_limit and not stop_event.is_set():
                     account_id = queue.popleft()
-                    record = self._get_inflight(account_id, runtime)
+                    attempt_runtime = {**runtime, "attempt": retry_round + 1}
+                    record = self._get_inflight(account_id, attempt_runtime)
                     pending[record.future] = (account_id, record)
-                    if retry_phase:
+                    if retry_round == 1:
+                        time.sleep(random.uniform(RETRY_DELAY_MIN_SECONDS, RETRY_DELAY_MAX_SECONDS))
+                    elif retry_round >= 2:
                         time.sleep(random.uniform(
-                            RETRY_DELAY_MIN_SECONDS,
-                            RETRY_DELAY_MAX_SECONDS,
+                            FINAL_RETRY_DELAY_MIN_SECONDS,
+                            FINAL_RETRY_DELAY_MAX_SECONDS,
                         ))
                     elif runtime["delay"] > 0:
                         time.sleep(runtime["delay"])
@@ -657,14 +697,20 @@ class JobManager:
                     except Exception as exc:
                         raw = {"status": "EXCEPTION", "error": str(exc), "account_id": str(account_id)}
 
-                    # Do not persist a temporary error or immediately hit the
-                    # same channel again. Finish the fast pass first, then
-                    # retry transient failures once at a deliberately slower
-                    # pace. The account is counted only after its final result.
+                    is_retryable = retryable_result(raw)
+                    if retry_round == 0:
+                        recent_failures.append(int(is_retryable))
+                        recent_blocks.append(int(
+                            raw.get("status") == "HTTP_ERROR"
+                            and raw.get("status_code") in {403, 429}
+                        ))
+
+                    # Finish each pass before retrying transient failures.
+                    # retry_count=2 now correctly means three total attempts,
+                    # matching the accurate behaviour of the older checker.
                     if (
-                        not retry_phase
-                        and runtime.get("retry_count", 0) > 0
-                        and retryable_result(raw)
+                        is_retryable
+                        and retry_round < max_retry_rounds
                     ):
                         retry_queue.append(account_id)
                         self._release_inflight(account_id, record)

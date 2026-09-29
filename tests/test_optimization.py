@@ -1,5 +1,6 @@
 import threading
 import uuid
+from collections import deque
 from concurrent.futures import Future
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -11,7 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
 from app.check_queue import CheckQueue
-from app.job_manager import InflightCheck, JobManager, retryable_result, selected_ids_for_run
+from app.job_manager import (
+    InflightCheck,
+    JobManager,
+    adaptive_worker_limit,
+    retry_worker_limit,
+    retryable_result,
+    selected_ids_for_run,
+)
 from app.models import CheckRun, TikTokAccount
 from app.read_cache import cached_read, invalidate_reads
 
@@ -70,6 +78,18 @@ def test_only_selected_scope_persists_selected_account_ids():
 
 def test_temporary_tiktok_403_is_retryable():
     assert retryable_result({"status": "HTTP_ERROR", "status_code": 403}) is True
+
+
+def test_retry_worker_limits_are_fast_then_cautious():
+    assert retry_worker_limit(0, 5) == 5
+    assert retry_worker_limit(1, 5) == 3
+    assert retry_worker_limit(2, 5) == 2
+
+
+def test_adaptive_worker_limit_reacts_to_recent_failures():
+    assert adaptive_worker_limit(5, deque([0, 0, 0, 0, 0], maxlen=10)) == 5
+    assert adaptive_worker_limit(5, deque([1, 0, 0, 0, 0], maxlen=10)) == 3
+    assert adaptive_worker_limit(5, deque([1, 1, 0, 0, 0], maxlen=10)) == 2
 
 
 def test_transient_network_error_retries_after_fast_pass(monkeypatch):
@@ -140,6 +160,61 @@ def test_transient_network_error_retries_after_fast_pass(monkeypatch):
     assert run.status == "COMPLETED"
     assert run.processed_accounts == 3
     assert run.live_count == 3
+    assert run.error_count == 0
+
+
+def test_retry_count_two_means_three_total_attempts(monkeypatch):
+    import app.job_manager as module
+
+    manager = JobManager.__new__(JobManager)
+    account_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    run = CheckRun(
+        id=run_id, requested_by=uuid.uuid4(), requested_session_id=None,
+        trigger_type="MANUAL", scope_type="USER", target_user_id=uuid.uuid4(),
+        priority=0, total_accounts=1, status="QUEUED",
+        created_at=datetime.now(timezone.utc), processed_accounts=0,
+        live_count=0, die_count=0, error_count=0,
+        follower_changed_count=0, new_problem_count=0,
+    )
+    db = MagicMock()
+    db.get.return_value = run
+
+    @contextmanager
+    def session():
+        yield db
+
+    monkeypatch.setattr(module, "db_session", session)
+    monkeypatch.setattr(module.random, "uniform", lambda *_: 0)
+    manager._runtime_settings = lambda _: {
+        "max_workers_per_job": 5, "delay": 0, "retry_count": 2,
+        "voice_notifications": False,
+    }
+    manager._cleanup_old_runs = lambda _: None
+    manager._release_inflight = lambda *args: None
+    manager._emit = lambda *args: None
+    manager._stop_events = {run_id: threading.Event()}
+    attempts = []
+
+    def check(_account_id, runtime):
+        attempts.append(runtime["attempt"])
+        future = Future()
+        future.set_result(
+            {"status": "LIVE"} if len(attempts) == 3
+            else {"status": "HTTP_ERROR", "status_code": 403}
+        )
+        return InflightCheck(future)
+
+    manager._get_inflight = check
+    manager._consume_result = lambda _record, checked_id, raw, *_: {
+        "account_id": str(checked_id), "status": raw["status"],
+    }
+    manager._run_job(run_id, [account_id], False, run.requested_by, None,
+                     manager._stop_events[run_id])
+
+    assert attempts == [1, 2, 3]
+    assert run.status == "COMPLETED"
+    assert run.live_count == 1
     assert run.error_count == 0
 
 

@@ -77,7 +77,7 @@ def test_temporary_tiktok_403_is_retryable():
     assert retryable_result({"status": "HTTP_ERROR", "status_code": 403}) is True
 
 
-def test_network_check_retries_immediately_without_delay(monkeypatch):
+def test_network_check_defers_retries_to_job_batch(monkeypatch):
     import app.job_manager as module
 
     manager = JobManager.__new__(JobManager)
@@ -93,18 +93,18 @@ def test_network_check_retries_immediately_without_delay(monkeypatch):
     manager.proxy_manager = MagicMock()
     manager.proxy_manager.get_proxy.return_value = None
     manager.checker = MagicMock()
-    manager.checker.check.side_effect = [
-        {"status": "HTTP_ERROR", "status_code": 503},
-        {"status": "TIMEOUT"},
-        {"status": "LIVE"},
-    ]
+    manager.checker.check.return_value = {"status": "HTTP_ERROR", "status_code": 503}
+    manager.checker.reset_session = MagicMock()
 
     result = manager._network_check(account_id, {"retry_count": 2, "timeout": 12})
 
-    assert manager.checker.check.call_count == 3
-    assert result["status"] == "LIVE"
-    assert result["attempt"] == 3
+    assert manager.checker.check.call_count == 1
+    assert result["status"] == "HTTP_ERROR"
+    assert result["attempt"] == 1
     assert result["account_id"] == str(account_id)
+
+    manager._network_check(account_id, {"retry_round": 1, "timeout": 12})
+    manager.checker.reset_session.assert_called_once_with()
 
 
 def test_list_orm_does_not_read_video_json():
@@ -188,6 +188,62 @@ def test_run_reconciles_every_account_and_drains_on_stop(monkeypatch, failure):
         assert run.status == "COMPLETED"
         assert stored == set(ids)
         assert run.processed_accounts == 100
+
+
+def test_run_retries_transient_errors_after_batch_and_stops_below_threshold(monkeypatch):
+    import app.job_manager as module
+
+    monkeypatch.setattr(module, "DEFERRED_RETRY_WAIT_SECONDS", 0)
+    manager = JobManager.__new__(JobManager)
+    ids = [uuid.uuid4() for _ in range(3)]
+    run_id = uuid.uuid4()
+    run = CheckRun(
+        id=run_id, requested_by=uuid.uuid4(), requested_session_id=None,
+        trigger_type="MANUAL", scope_type="USER", target_user_id=None,
+        priority=0, total_accounts=3, status="QUEUED",
+        created_at=datetime.now(timezone.utc), processed_accounts=0,
+        live_count=0, die_count=0, error_count=0,
+        follower_changed_count=0, new_problem_count=0,
+    )
+    db = MagicMock()
+    db.get.return_value = run
+
+    @contextmanager
+    def session():
+        yield db
+
+    monkeypatch.setattr(module, "db_session", session)
+    manager._runtime_settings = lambda _: {
+        "max_workers_per_job": 5, "voice_notifications": False,
+    }
+    manager._cleanup_old_runs = lambda _: None
+    manager._release_inflight = lambda *args: None
+    manager._stop_events = {run_id: threading.Event()}
+    manager._emit = lambda *args: None
+    attempts = {account_id: 0 for account_id in ids}
+
+    def check(account_id, runtime):
+        attempts[account_id] += 1
+        future = Future()
+        if attempts[account_id] == 1 or account_id == ids[-1]:
+            future.set_result({"status": "HTTP_ERROR", "status_code": 503})
+        else:
+            future.set_result({"status": "LIVE"})
+        return InflightCheck(future)
+
+    manager._get_inflight = check
+    manager._consume_result = lambda record, account_id, raw, *args: {
+        "account_id": str(account_id),
+        "status": "ERROR" if retryable_result(raw) else raw["status"],
+    }
+
+    manager._run_job(run_id, ids, False, run.requested_by, None, manager._stop_events[run_id])
+
+    assert attempts == {account_id: 2 for account_id in ids}
+    assert run.status == "COMPLETED"
+    assert run.processed_accounts == 3
+    assert run.live_count == 2
+    assert run.error_count == 1
 
 
 def test_shared_result_is_persisted_once():

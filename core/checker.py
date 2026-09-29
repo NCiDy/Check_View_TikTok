@@ -38,6 +38,16 @@ class TikTokChecker:
             self._thread_local.session = session
         return session
 
+    def reset_session(self) -> None:
+        """Drop the current worker's connection before a deferred retry."""
+        session = getattr(self._thread_local, "session", None)
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+            self._thread_local.session = None
+
     @staticmethod
     def clean_username(raw_input: str) -> str:
         """

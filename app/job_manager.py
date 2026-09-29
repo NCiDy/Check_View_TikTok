@@ -26,13 +26,16 @@ from .read_cache import invalidate_reads
 RETRYABLE_STATUSES = {"TIMEOUT", "HTTP_ERROR", "PARSE_ERROR", "EXCEPTION"}
 MAX_CHECK_WORKERS = 5
 MAX_WORKERS_PER_JOB = 5
+MAX_DEFERRED_RETRY_ROUNDS = 3
+DEFERRED_RETRY_WAIT_SECONDS = 5
+RETRY_STOP_THRESHOLD = 3
 logger = logging.getLogger(__name__)
 
 
 def retryable_result(result):
     status = result.get("status")
     if status == "HTTP_ERROR":
-        # These upstream errors are safe to retry immediately.
+        # These upstream errors are safe to retry after the current batch.
         return result.get("status_code") in {403, 408, 425, 429, 500, 502, 503, 504}
     return status in {"TIMEOUT", "PARSE_ERROR", "EXCEPTION"}
 
@@ -280,13 +283,15 @@ class JobManager:
             if username is None:
                 return {"status": "EXCEPTION", "error": "Kênh đã bị xóa", "account_id": str(account_id)}
 
-        result: dict[str, Any] = {}
-        for attempt in range(max(0, int(runtime.get("retry_count", 0))) + 1):
-            proxy = self.proxy_manager.get_proxy()
-            result = self.checker.check(username, proxy=proxy, timeout=runtime["timeout"])
-            result["attempt"] = attempt + 1
-            if not retryable_result(result):
-                break
+        # A failed request is retried after the whole batch finishes. Retrying
+        # three times immediately tends to hit the same short TikTok 5xx/WAF
+        # window and wastes every attempt at once.
+        retry_round = max(0, int(runtime.get("retry_round", 0)))
+        if retry_round:
+            self.checker.reset_session()
+        proxy = self.proxy_manager.get_proxy()
+        result = self.checker.check(username, proxy=proxy, timeout=runtime["timeout"])
+        result["attempt"] = retry_round + 1
         result["account_id"] = str(account_id)
         return result
 
@@ -587,6 +592,9 @@ class JobManager:
 
             queue = deque(account_ids)
             completed: set[uuid.UUID] = set()
+            retry_candidates: dict[uuid.UUID, dict[str, Any]] = {}
+            finalizing_retry_errors: set[uuid.UUID] = set()
+            retry_round = 0
             persistence_retries: dict[uuid.UUID, int] = {}
             counters = {key: 0 for key in ("processed_accounts", "live_count", "die_count",
                                          "error_count", "follower_changed_count", "new_problem_count")}
@@ -603,10 +611,33 @@ class JobManager:
 
             # On stop, drain already submitted work so completed requests are
             # persisted; do not silently drop the last in-flight results.
-            while pending or (queue and not stop_event.is_set()):
+            while pending or ((queue or retry_candidates) and not stop_event.is_set()):
+                if not pending and not queue and retry_candidates:
+                    should_retry = (
+                        retry_round < MAX_DEFERRED_RETRY_ROUNDS
+                        and (retry_round == 0 or len(retry_candidates) >= RETRY_STOP_THRESHOLD)
+                    )
+                    if should_retry:
+                        retry_round += 1
+                        if stop_event.wait(DEFERRED_RETRY_WAIT_SECONDS):
+                            break
+                        queue.extend(retry_candidates)
+                        retry_candidates.clear()
+                    else:
+                        # Finalize the last transient responses only after the
+                        # retry policy is exhausted (or fewer than 3 remain).
+                        for account_id, raw in list(retry_candidates.items()):
+                            future = concurrent.futures.Future()
+                            future.set_result(raw)
+                            record = InflightCheck(future=future)
+                            pending[future] = (account_id, record)
+                            finalizing_retry_errors.add(account_id)
+                        retry_candidates.clear()
+
                 while queue and len(pending) < per_job and not stop_event.is_set():
                     account_id = queue.popleft()
-                    record = self._get_inflight(account_id, runtime)
+                    attempt_runtime = {**runtime, "retry_round": retry_round}
+                    record = self._get_inflight(account_id, attempt_runtime)
                     pending[record.future] = (account_id, record)
 
                 if not pending:
@@ -620,6 +651,12 @@ class JobManager:
                         raw = future.result()
                     except Exception as exc:
                         raw = {"status": "EXCEPTION", "error": str(exc), "account_id": str(account_id)}
+
+                    if retryable_result(raw) and account_id not in finalizing_retry_errors:
+                        retry_candidates[account_id] = raw
+                        self._release_inflight(account_id, record)
+                        continue
+                    finalizing_retry_errors.discard(account_id)
 
                     try:
                         outcome = self._consume_result(

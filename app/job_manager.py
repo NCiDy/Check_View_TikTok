@@ -627,12 +627,14 @@ class JobManager:
             counters = {key: 0 for key in ("processed_accounts", "live_count", "die_count",
                                          "error_count", "follower_changed_count", "new_problem_count")}
             last_saved = time.monotonic()
-            per_job = max(
-                1,
-                min(
-                    runtime["max_workers_per_job"],
-                    MAX_WORKERS_PER_JOB if runtime["priority"] == 0 else 3,
-                ),
+            # Manager/Boss jobs are the main company-check workflow. Give
+            # priority jobs the full protected pool even when an older saved
+            # setting still says 3 workers. Other jobs remain capped at 3 so
+            # one user cannot monopolize the shared executor.
+            per_job = (
+                MAX_WORKERS_PER_JOB
+                if runtime["priority"] == 0
+                else max(1, min(runtime["max_workers_per_job"], 3))
             )
 
             # On stop, drain already submitted work so completed requests are
@@ -665,11 +667,36 @@ class JobManager:
                     time.sleep(cooldown)
                     queue.extend(retry_queue)
                     retry_queue.clear()
+                    recent_failures.clear()
+                    recent_blocks.clear()
 
-                # The first pass runs at the full five-worker speed. Deferred
-                # retries stay concurrent too, but use three workers to avoid
-                # immediately hammering TikTok again after a temporary block.
-                active_limit = min(3, per_job) if retry_phase else per_job
+                active_limit = retry_worker_limit(retry_round, per_job)
+                if retry_round == 0:
+                    active_limit = adaptive_worker_limit(per_job, recent_failures)
+
+                # Several 403/429 responses in one short window usually mean
+                # the shared outbound IP is being throttled. Pause this job
+                # thread once instead of spending every retry immediately.
+                if (
+                    retry_round == 0
+                    and not pending
+                    and queue
+                    and len(recent_blocks) >= 5
+                    and sum(recent_blocks) >= 3
+                ):
+                    cooldown = random.uniform(
+                        RETRY_COOLDOWN_MIN_SECONDS,
+                        RETRY_COOLDOWN_MAX_SECONDS,
+                    )
+                    logger.warning(
+                        "pausing run=%s after TikTok throttle burst for %.1fs",
+                        run_id,
+                        cooldown,
+                    )
+                    time.sleep(cooldown)
+                    recent_failures.clear()
+                    recent_blocks.clear()
+
                 while queue and len(pending) < active_limit and not stop_event.is_set():
                     account_id = queue.popleft()
                     attempt_runtime = {**runtime, "attempt": retry_round + 1}

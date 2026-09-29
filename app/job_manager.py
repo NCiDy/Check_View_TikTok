@@ -29,8 +29,8 @@ MAX_CHECK_WORKERS = 5
 MAX_WORKERS_PER_JOB = 5
 RETRY_COOLDOWN_MIN_SECONDS = 5.0
 RETRY_COOLDOWN_MAX_SECONDS = 10.0
-RETRY_DELAY_MIN_SECONDS = 2.0
-RETRY_DELAY_MAX_SECONDS = 4.0
+RETRY_DELAY_MIN_SECONDS = 0.3
+RETRY_DELAY_MAX_SECONDS = 0.7
 logger = logging.getLogger(__name__)
 
 
@@ -599,12 +599,10 @@ class JobManager:
             counters = {key: 0 for key in ("processed_accounts", "live_count", "die_count",
                                          "error_count", "follower_changed_count", "new_problem_count")}
             last_saved = time.monotonic()
-            per_job = max(
-                1,
-                min(
-                    runtime["max_workers_per_job"],
-                    MAX_WORKERS_PER_JOB if runtime["priority"] == 0 else 3,
-                ),
+            per_job = (
+                MAX_WORKERS_PER_JOB
+                if runtime["priority"] == 0
+                else max(1, min(runtime["max_workers_per_job"], 3))
             )
 
             # On stop, drain already submitted work so completed requests are
@@ -632,7 +630,7 @@ class JobManager:
                     queue.extend(retry_queue)
                     retry_queue.clear()
 
-                active_limit = 1 if retry_phase else per_job
+                active_limit = min(3, per_job) if retry_phase else per_job
                 while queue and len(pending) < active_limit and not stop_event.is_set():
                     account_id = queue.popleft()
                     record = self._get_inflight(account_id, runtime)

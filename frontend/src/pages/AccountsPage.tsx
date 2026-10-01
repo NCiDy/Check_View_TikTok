@@ -116,7 +116,7 @@ function FollowerValue({
   );
 }
 
-export function AccountsPage() {
+export function AccountsPage({ companyView = false }: { companyView?: boolean }) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const check = useStartCheck();
@@ -128,13 +128,17 @@ export function AccountsPage() {
   const [machineId, setMachineId] = useState("ALL");
   const [search, setSearch] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("FOLLOWERS");
-  const ownerId = params.get("owner") || user?.id || "";
+  const requestedOwnerId = params.get("owner");
+  const ownerId = companyView
+    ? (requestedOwnerId || "ALL")
+    : (user?.role === "MEMBER" ? (user.id || "") : (requestedOwnerId || user?.id || ""));
   const status = params.get("status") || "ALL";
   const metricFilter = (params.get("metric") as MetricFilter) || "ALL";
   const condition = params.get("condition") || "ALL";
 
   const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
-  const usersQuery = useQuery({ queryKey: ["users"], queryFn: () => api<{ users: User[] }>("/api/users") });
+  const viewQuery = companyView ? "?company_view=true" : "";
+  const usersQuery = useQuery({ queryKey: ["users", companyView], queryFn: () => api<{ users: User[] }>(`/api/users${viewQuery}`) });
   const departmentsQuery = useQuery({
     queryKey: ["departments"],
     queryFn: () =>
@@ -146,8 +150,8 @@ export function AccountsPage() {
   const departments =
     departmentsQuery.data?.departments || [];
   const machinesQuery = useQuery({
-    queryKey: ["machines", ownerId],
-    queryFn: () => api<{ machines: Machine[] }>(`/api/machines?owner_id=${encodeURIComponent(ownerId)}`),
+    queryKey: ["machines", ownerId, companyView],
+    queryFn: () => api<{ machines: Machine[] }>(`/api/machines?owner_id=${encodeURIComponent(ownerId)}&company_view=${companyView}`),
     enabled: Boolean(ownerId && ownerId !== "ALL"),
   });
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -163,7 +167,7 @@ export function AccountsPage() {
   const accountParams = new URLSearchParams({
     owner_id: ownerId, machine_id: machineId, status, condition,
     metric: metricFilter, sort: sortMode, search: debouncedSearch,
-    page: String(page), page_size: "50",
+    page: String(page), page_size: "50", company_view: String(companyView),
   });
   const accountsQuery = useQuery({
     queryKey: ["accounts", ownerId, accountParams.toString()],
@@ -172,14 +176,14 @@ export function AccountsPage() {
     enabled: Boolean(ownerId),
   });
   const summaryQuery = useQuery({
-    queryKey: ["account-summary", ownerId],
+    queryKey: ["account-summary", ownerId, companyView],
     queryFn: ({ signal }) => api<{ summary: ReturnType<typeof accountStats> & { max_followers: number | null } }>(
-      `/api/accounts-summary?owner_id=${encodeURIComponent(ownerId)}`, { signal }),
+      `/api/accounts-summary?owner_id=${encodeURIComponent(ownerId)}&company_view=${companyView}`, { signal }),
     enabled: Boolean(ownerId),
   });
   const detailQuery = useQuery({
-    queryKey: ["account-detail", detail?.id],
-    queryFn: ({ signal }) => api<{ account: TikTokAccount }>(`/api/accounts/${detail!.id}`, { signal }),
+    queryKey: ["account-detail", detail?.id, companyView],
+    queryFn: ({ signal }) => api<{ account: TikTokAccount }>(`/api/accounts/${detail!.id}?company_view=${companyView}`, { signal }),
     enabled: dialog === "detail" && Boolean(detail?.id),
     staleTime: 0,
   });
@@ -202,24 +206,24 @@ export function AccountsPage() {
   const canAdd = Boolean(
     owner &&
     (
-      isCompanyAdmin ||
+      !companyView && (isCompanyAdmin ||
       ((isOwnAccount || isManagedMember) && user?.can_add_accounts)
-    )
+    ))
   );
 
   const canDelete = Boolean(
     owner &&
     (
-      isCompanyAdmin ||
+      !companyView && (isCompanyAdmin ||
       ((isOwnAccount || isManagedMember) && user?.can_delete_accounts)
-    )
+    ))
   );
 
   const canCheck = Boolean(
-    isCompanyAdmin || user?.can_run_checks
+    !companyView && (isCompanyAdmin || user?.can_run_checks)
   );
   const canTransfer = Boolean(
-    user &&
+    !companyView && user &&
     detail &&
     (
       isCompanyAdmin ||
@@ -248,7 +252,7 @@ export function AccountsPage() {
   const summary = summaryQuery.data?.summary || accountStats([]);
 
   const canEditCondition = (account: TikTokAccount) => Boolean(
-    user && (
+    !companyView && user && (
       isCompanyAdmin ||
       account.owner_id === user.id ||
       (
@@ -611,7 +615,7 @@ export function AccountsPage() {
     <div className="accounts-layout">
       <aside className="people-rail panel">
         <div className="rail-heading"><div><p className="eyebrow">PHẠM VI</p><h2>Nhân sự</h2></div></div>
-        {isCompanyAdmin && <button className={`person-row ${ownerId === "ALL" ? "active" : ""}`} onClick={() => selectOwner("ALL")}><span className="avatar avatar-sm">CT</span><span><strong>Toàn công ty</strong><small>Tất cả kênh</small></span></button>}
+        {(isCompanyAdmin || companyView) && <button className={`person-row ${ownerId === "ALL" ? "active" : ""}`} onClick={() => selectOwner("ALL")}><span className="avatar avatar-sm">CT</span><span><strong>Toàn công ty</strong><small>{companyView ? "Chỉ xem" : "Tất cả kênh"}</small></span></button>}
                 <div className="company-people">
           {activeBosses.length > 0 && (
             <div className="boss-section">
@@ -838,10 +842,10 @@ export function AccountsPage() {
           </div>
           <div className="table-scroll">
             <table>
-              <thead><tr><th><input type="checkbox" checked={Boolean(filtered.length && filtered.every((item) => selected.has(item.id)))} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((item) => item.id)) : new Set())} /></th><th>Máy / Kênh</th><th>Tài khoản</th><th>Trạng thái</th><th>Followers</th><th>Tổng view mẫu</th><th>Tình trạng kênh</th><th>Lần check</th><th>2FA</th><th /></tr></thead>
+              <thead><tr><th><input type="checkbox" disabled={companyView} checked={Boolean(!companyView && filtered.length && filtered.every((item) => selected.has(item.id)))} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((item) => item.id)) : new Set())} /></th><th>Máy / Kênh</th><th>Tài khoản</th><th>Trạng thái</th><th>Followers</th><th>Tổng view mẫu</th><th>Tình trạng kênh</th><th>Lần check</th><th>2FA</th><th /></tr></thead>
               <tbody>
                 {filtered.map((account) => <tr key={account.id} className={account.is_monetized ? "monetized-account-row" : ""}>
-                  <td><input type="checkbox" checked={selected.has(account.id)} onChange={(e) => setSelected((old) => { const next = new Set(old); e.target.checked ? next.add(account.id) : next.delete(account.id); return next; })} /></td>
+                  <td><input type="checkbox" disabled={companyView} checked={!companyView && selected.has(account.id)} onChange={(e) => setSelected((old) => { const next = new Set(old); e.target.checked ? next.add(account.id) : next.delete(account.id); return next; })} /></td>
                   <td><strong>M#{account.machine_number} – K{account.slot_number}</strong>{account.is_monetized && <span className="monetized-badge">BKT</span>}<small>{account.owner_name}</small></td>
                   <td><div className="account-cell"><Avatar name={account.nickname || account.username} url={account.avatar_url} size="sm" /><span><strong>@{account.username}</strong><small>{account.nickname || "Chưa có nickname"}</small></span></div></td>
                   <td><span className={`status-badge status-${account.status.toLowerCase()}`}>{account.status === "LIVE" && account.is_private ? "LIVE · RIÊNG TƯ" : statusLabel(account.status)}</span>{account.last_error_message && <small title={account.last_error_message}>{account.last_error_code}</small>}</td>
@@ -872,7 +876,7 @@ export function AccountsPage() {
                     </select>
                   </td>
                   <td>{formatTime(account.last_checked_at)}</td>
-                  <td><button className="icon-button" title={account.has_totp ? "Lấy mã 2FA" : "Thiết lập 2FA"} disabled={!canEditCondition(account)} onClick={() => { setDetail(account); setDialog("totp"); }}><LockKeyhole size={16} /></button></td>
+                  <td><button className="icon-button" title={companyView ? "Không khả dụng trong chế độ chỉ xem" : account.has_totp ? "Lấy mã 2FA" : "Thiết lập 2FA"} disabled={companyView || !canEditCondition(account)} onClick={() => { setDetail(account); setDialog("totp"); }}><LockKeyhole size={16} /></button></td>
                   <td><button className="icon-button" title="Chi tiết" onClick={() => { setDetail(account); setDialog("detail"); }}><Eye size={17} /></button></td>
                 </tr>)}
                 {!filtered.length && <tr><td colSpan={10}><div className="empty-state">{accountsQuery.isPending ? "Đang tải kênh…" : accountsQuery.isError ? (accountsQuery.error as Error).message : "Chưa có kênh phù hợp."}</div></td></tr>}

@@ -44,6 +44,7 @@ small { display: block; color: var(--muted); font-size: .73rem; line-height: 1.4
 .button.small { min-height: 33px; padding: 0 11px; font-size: .73rem; }
 .icon-button { width: 39px; height: 39px; background: #111e2e; border: 1px solid var(--border); border-radius: 10px; }
 .icon-button:hover { background: #1b2b40; border-color: #38516b; }
+.icon-button.company-view-active { color: #36d4ff; border-color: rgba(54,212,255,.65); box-shadow: 0 0 16px rgba(54,212,255,.18); }
 .link-button { background: transparent; color: var(--cyan); font-weight: 700; }
 
 .brand-mark {

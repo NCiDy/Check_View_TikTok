@@ -6,11 +6,18 @@ from sqlalchemy.orm import Session
 
 from .models import Department, Machine, User
 
+COMPANY_READONLY_USERNAMES = frozenset({"ncidy1409", "anvv"})
+
+
+def is_company_readonly_viewer(actor: User) -> bool:
+    return actor.username.strip().lower() in COMPANY_READONLY_USERNAMES
+
 
 def can_view_user(
     db: Session,
     actor: User,
     target_id: uuid.UUID,
+    company_view: bool = False,
 ) -> bool:
     if actor.role in {"BOSS", "MANAGER"} or actor.id == target_id:
         return True
@@ -19,6 +26,9 @@ def can_view_user(
 
     if target is None or not target.is_active:
         return False
+
+    if company_view and is_company_readonly_viewer(actor):
+        return not target.is_technical_account
 
     if actor.role != "LEADER":
         return False
@@ -45,8 +55,13 @@ def can_view_user(
     )
 
 
-def ensure_can_view_user(db: Session, actor: User, target_id: uuid.UUID) -> None:
-    if not can_view_user(db, actor, target_id):
+def ensure_can_view_user(
+    db: Session,
+    actor: User,
+    target_id: uuid.UUID,
+    company_view: bool = False,
+) -> None:
+    if not can_view_user(db, actor, target_id, company_view=company_view):
         raise HTTPException(status_code=403, detail="Không được xem dữ liệu của người này")
 
 
@@ -160,4 +175,3 @@ def ensure_can_start_manual_check(db: Session, actor: User, target_id: uuid.UUID
     if actor.role not in {"BOSS", "MANAGER"} and not actor.can_run_checks:
         raise HTTPException(status_code=403, detail="BOSS đã tắt quyền check của bạn")
     ensure_can_view_user(db, actor, target_id)
-

@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models import User
-from app.permissions import can_manage_accounts
+from app.permissions import can_manage_accounts, can_view_user
 from server import ensure_can_manage_user
 
 
@@ -107,6 +107,28 @@ def test_member_cannot_manage_another_member():
         other_member.id,
         "can_add_accounts",
     ) is False
+
+
+@pytest.mark.parametrize("username", ["ncidy1409", "anvv"])
+def test_special_member_can_read_company_only_when_view_mode_is_enabled(username):
+    member = make_user("MEMBER")
+    member.username = username
+    other_member = make_user("MEMBER")
+    db = MagicMock(spec=Session)
+    db.get.return_value = other_member
+
+    assert can_view_user(db, member, other_member.id) is False
+    assert can_view_user(db, member, other_member.id, company_view=True) is True
+    assert can_manage_accounts(db, member, other_member.id, "can_add_accounts") is False
+
+
+def test_regular_member_cannot_enable_company_view():
+    member = make_user("MEMBER")
+    other_member = make_user("MEMBER")
+    db = MagicMock(spec=Session)
+    db.get.return_value = other_member
+
+    assert can_view_user(db, member, other_member.id, company_view=True) is False
 
 
 def test_boss_can_manage_company_accounts():

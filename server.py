@@ -57,6 +57,7 @@ from app.permissions import (
     ensure_can_transfer_account,
     ensure_can_start_manual_check,
     ensure_can_view_user,
+    is_company_readonly_viewer,
     machine_owner,
 )
 from app.security import (
@@ -758,7 +759,10 @@ def serialize_account(account: TikTokAccount, machine: Machine, owner: User, inc
     }
 
 
-def visible_users_query(current: User):
+def visible_users_query(current: User, company_view: bool = False):
+    if company_view and is_company_readonly_viewer(current):
+        return select(User).order_by(User.role, User.full_name)
+
     if current.role in {"BOSS", "MANAGER"}:
         return select(User).order_by(User.role, User.full_name)
 
@@ -800,9 +804,10 @@ def visible_users_query(current: User):
 def visible_owner_ids(
     db: Session,
     current: User,
+    company_view: bool = False,
 ) -> list[uuid.UUID]:
     query = (
-        visible_users_query(current)
+        visible_users_query(current, company_view=company_view)
         .with_only_columns(User.id)
         .order_by(None)
     )
@@ -994,11 +999,12 @@ def change_password(
 
 @app.get("/api/users")
 def list_users(
+    company_view: bool = False,
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
     query = (
-        visible_users_query(current)
+        visible_users_query(current, company_view=company_view)
         .where(User.is_technical_account.is_(False))
     )
 
@@ -1297,11 +1303,12 @@ def upload_user_avatar(
 @app.get("/api/machines")
 def list_machines(
     owner_id: str,
+    company_view: bool = False,
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
     owner_uuid = parse_uuid(owner_id, "Owner ID")
-    ensure_can_view_user(db, current, owner_uuid)
+    ensure_can_view_user(db, current, owner_uuid, company_view=company_view)
     machines = list(db.scalars(
         select(Machine).where(Machine.owner_id == owner_uuid).order_by(Machine.machine_number)
     ))
@@ -1505,12 +1512,17 @@ def account_summary(db: Session, allowed_ids):
 
 
 @app.get("/api/accounts-summary")
-def get_account_summary(owner_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+def get_account_summary(
+    owner_id: str,
+    company_view: bool = False,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
     if owner_id == "ALL":
-        allowed_ids = visible_owner_ids(db, current)
+        allowed_ids = visible_owner_ids(db, current, company_view=company_view)
     else:
         owner_uuid = parse_uuid(owner_id, "Owner ID")
-        ensure_can_view_user(db, current, owner_uuid)
+        ensure_can_view_user(db, current, owner_uuid, company_view=company_view)
         allowed_ids = [owner_uuid]
     return {"summary": account_summary(db, allowed_ids)}
 
@@ -1518,6 +1530,7 @@ def get_account_summary(owner_id: str, db: Session = Depends(get_db), current: U
 @app.get("/api/accounts")
 def list_accounts(
     owner_id: str,
+    company_view: bool = False,
     machine_id: str | None = None,
     status: str | None = None,
     search: str | None = None,
@@ -1530,10 +1543,10 @@ def list_accounts(
     current: User = Depends(get_current_user),
 ):
     if owner_id == "ALL":
-        allowed_ids = visible_owner_ids(db, current)
+        allowed_ids = visible_owner_ids(db, current, company_view=company_view)
     else:
         owner_uuid = parse_uuid(owner_id, "Owner ID")
-        ensure_can_view_user(db, current, owner_uuid)
+        ensure_can_view_user(db, current, owner_uuid, company_view=company_view)
         allowed_ids = [owner_uuid]
     scope = Machine.owner_id.in_(allowed_ids)
     base = select(TikTokAccount.id).join(Machine, Machine.id == TikTokAccount.machine_id).where(scope)
@@ -1579,7 +1592,12 @@ def list_accounts(
 
 
 @app.get("/api/accounts/{account_id}")
-def account_detail(account_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+def account_detail(
+    account_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+    company_view: bool = False,
+):
     row = db.execute(select(TikTokAccount, Machine, User)
                      .join(Machine, Machine.id == TikTokAccount.machine_id)
                      .join(User, User.id == Machine.owner_id)
@@ -1587,7 +1605,7 @@ def account_detail(account_id: str, db: Session = Depends(get_db), current: User
                      .where(TikTokAccount.id == parse_uuid(account_id, "Account ID"))).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy kênh")
-    ensure_can_view_user(db, current, row[1].owner_id)
+    ensure_can_view_user(db, current, row[1].owner_id, company_view=company_view)
     return {"account": serialize_account(*row, include_details=True)}
 
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Building2, ClipboardList, KeyRound, LayoutDashboard, LogOut, Menu, Network, RefreshCw, Search, Settings2, Shield, Sparkles, Users, Volume2, VolumeX, X } from "lucide-react";
+import { Activity, Building2, ClipboardList, Eye, EyeOff, KeyRound, LayoutDashboard, LogOut, Menu, Network, RefreshCw, Search, Settings2, Shield, Sparkles, Users, Volume2, VolumeX, X } from "lucide-react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, notify } from "./api";
 import { useAuth } from "./AuthContext";
@@ -45,12 +45,20 @@ function AuthenticatedApp() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [announcementOpen, setAnnouncementOpen] = useState(false);
+  const [companyView, setCompanyView] = useState(false);
   const { data: runs } = useQuery({ queryKey: ["current-run"], queryFn: () => api<{ runs: CheckRun[] }>("/api/check-runs/current") });
   useEffect(() => { if (runs?.runs[0]) setCurrentRun(runs.runs[0]); }, [runs, setCurrentRun]);
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
   const isCompanyAdmin = user?.role === "BOSS" || user?.role === "MANAGER";
   const isSystemAccount = user?.username.toLowerCase() === "system" && user?.is_technical_account;
+  const canUseCompanyView = ["ncidy1409", "anvv"].includes(user?.username.toLowerCase() || "");
+
+  function toggleCompanyView() {
+    const next = !companyView;
+    setCompanyView(next);
+    navigate("/accounts");
+  }
 
   const nav = [
     { to: "/", label: "Tổng quan", icon: LayoutDashboard, end: true },
@@ -103,7 +111,7 @@ function AuthenticatedApp() {
     </aside>
     {mobileOpen && <button className="mobile-overlay" onClick={() => setMobileOpen(false)} />}
     <div className="main-column">
-      <header className="topbar"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={21} /></button><div className="topbar-context"><Building2 size={18} /><span>Không gian công ty</span></div><div className="topbar-actions">{isCompanyAdmin && <button className="topbar-button" onClick={() => setSearchOpen(true)}><Search size={17} /><span>Tìm toàn công ty</span></button>}{isSystemAccount && (
+      <header className="topbar"><button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={21} /></button><div className="topbar-context"><Building2 size={18} /><span>Không gian công ty</span></div><div className="topbar-actions">{isCompanyAdmin && <button className="topbar-button" onClick={() => setSearchOpen(true)}><Search size={17} /><span>Tìm toàn công ty</span></button>}{canUseCompanyView && <button className={`icon-button${companyView ? " company-view-active" : ""}`} onClick={toggleCompanyView} title={companyView ? "Trở về kênh của tôi" : "Xem toàn công ty"}>{companyView ? <EyeOff size={18} /> : <Eye size={18} />}</button>}{isSystemAccount && (
         <button
           className="topbar-button update-button"
           onClick={() => setAnnouncementOpen(true)}
@@ -114,7 +122,7 @@ function AuthenticatedApp() {
         </button>
       )}<button className="topbar-button" onClick={toggleVoice}>{voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}<span>{voiceEnabled ? "Đang bật loa" : "Bật loa"}</span></button><label className="profile-button" title="Bấm để đổi ảnh"><Avatar name={user!.full_name} url={user!.avatar_url} size="sm" /><span><strong>{user!.full_name}</strong><small>{user!.role}{user!.is_system_owner ? " · Chính" : ""}</small></span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => void uploadOwnAvatar(e.target.files?.[0])} /></label><button className="icon-button" title="Đổi mật khẩu" onClick={() => setPasswordOpen(true)}><KeyRound size={18} /></button><button className="icon-button logout-icon" title="Đăng xuất" onClick={() => void logout()}><LogOut size={18} /></button></div></header>
       <JobPanel />
-      <main className={location.pathname === "/services" ? "content service-content" : "content"}><Routes><Route path="/" element={<DashboardPage />} /><Route path="/accounts" element={<AccountsPage />} /><Route path="/services" element={<ServicesPage />} /><Route path="/organization" element={<OrganizationPage />} /><Route path="/sessions" element={<SessionsPage />} />{isCompanyAdmin && <><Route path="/people" element={<PeoplePage />} /><Route path="/audit" element={<AuditPage />} /><Route path="/settings" element={<SettingsPage />} /></>}<Route path="*" element={<Navigate to="/" replace />} /></Routes></main>
+      <main className={location.pathname === "/services" ? "content service-content" : "content"}><Routes><Route path="/" element={<DashboardPage />} /><Route path="/accounts" element={<AccountsPage companyView={companyView} />} /><Route path="/services" element={<ServicesPage />} /><Route path="/organization" element={<OrganizationPage />} /><Route path="/sessions" element={<SessionsPage />} />{isCompanyAdmin && <><Route path="/people" element={<PeoplePage />} /><Route path="/audit" element={<AuditPage />} /><Route path="/settings" element={<SettingsPage />} /></>}<Route path="*" element={<Navigate to="/" replace />} /></Routes></main>
     </div>
     {searchOpen && <SearchDialog onClose={() => setSearchOpen(false)} onOpenOwner={(id) => { setSearchOpen(false); navigate(`/accounts?owner=${id}`); }} />}
     {passwordOpen && <PasswordDialog onClose={() => setPasswordOpen(false)} />}

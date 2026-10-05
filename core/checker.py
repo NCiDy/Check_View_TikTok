@@ -1,20 +1,19 @@
 import re
-import json
 import time
 import threading
-from html import unescape
 from typing import Dict, Any, Optional, List
 from curl_cffi import requests
+from curl_cffi.requests.exceptions import Timeout
+from core.embed_parser import parse_embed, metric
 
 class TikTokChecker:
     """
-    High-performance, zero-cookie, 100% account-safe TikTok profile and video metrics extractor.
+    Public, login-free TikTok profile and video metrics extractor.
     Uses public embed SSR endpoints with TLS Chrome impersonation.
     """
     
     BASE_EMBED_URL = "https://www.tiktok.com/embed/@{username}"
     DEFAULT_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Referer": "https://www.tiktok.com/",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
@@ -110,16 +109,16 @@ class TikTokChecker:
                 p = f"http://{p}"
             proxies = {"http": p, "https": p}
 
-        start_time = time.time()
+        start_time = time.monotonic()
         try:
             r = self._session().get(
                 url,
                 headers=self.DEFAULT_HEADERS,
-                impersonate="chrome124",
+                impersonate="chrome",
                 proxies=proxies,
                 timeout=timeout
             )
-            elapsed = round((time.time() - start_time) * 1000, 1)
+            elapsed = round((time.monotonic() - start_time) * 1000, 1)
 
             # Only an explicit 404 is a dead candidate. The database layer
             # requires repeated confirmation before changing status to DIE.
@@ -145,45 +144,8 @@ class TikTokChecker:
                     "error": f"Lỗi HTTP {r.status_code}"
                 }
 
-            # Parse FRONTITY SSR JSON
-            match = re.search(r'<script[^>]+id=[\'"]__FRONTITY_CONNECT_STATE__[\'"][^>]*>(.*?)</script>', r.text, re.DOTALL)
-            if not match:
-                # Check for alternative script tags or WAF
-                return {
-                    "raw_input": username,
-                    "username": clean_user,
-                    "status": "PARSE_ERROR",
-                    "latency_ms": elapsed,
-                    "error": "Không thể phân tích dữ liệu SSR (Có thể IP bị hạn chế)"
-                }
-
-            state_text = match.group(1).strip()
-            try:
-                data = json.loads(state_text)
-            except json.JSONDecodeError:
-                # Some edge responses HTML-escape the inline JSON. Supporting
-                # both forms avoids false PARSE_ERROR without another request.
-                data = json.loads(unescape(state_text))
-            source = data.get("source", {})
-            data_dict = source.get("data", {})
-            
-            # Key is usually /embed/@username (in lower or exact case)
-            embed_key = None
-            for k in data_dict.keys():
-                if k.startswith("/embed/@"):
-                    embed_key = k
-                    break
-            
-            if not embed_key:
-                return {
-                    "raw_input": username,
-                    "username": clean_user,
-                    "status": "PARSE_ERROR",
-                    "latency_ms": elapsed,
-                    "error": "Không tìm thấy khóa dữ liệu Embed; không kết luận DIE"
-                }
-
-            embed_data = data_dict.get(embed_key, {})
+            # Parse the response already received; never add a second request.
+            embed_data = parse_embed(r.text, clean_user)
             user_info = embed_data.get("userInfo")
             is_error = embed_data.get("isError", False)
 
@@ -199,28 +161,33 @@ class TikTokChecker:
                 }
 
             # Correct 32-bit signed integer overflow for large heartCount
-            raw_hearts = user_info.get("heartCount", 0)
+            raw_hearts = metric(user_info.get("heartCount"), "heartCount", default=0, signed=True)
             if isinstance(raw_hearts, int) and raw_hearts < 0:
                 raw_hearts = raw_hearts + (1 << 32)
 
-            follower_count = user_info.get("followerCount", 0)
-            following_count = user_info.get("followingCount", 0)
+            follower_count = metric(user_info.get("followerCount"), "followerCount")
+            following_count = metric(user_info.get("followingCount"), "followingCount", default=0)
             is_private = user_info.get("privateAccount", False)
             is_verified = user_info.get("verified", False)
             nickname = user_info.get("nickname", "")
-            avatar = user_info.get("avatarThumbUrl", "")
+            avatar = user_info.get("avatarThumbUrl") or user_info.get("avatarThumb", "")
             bio = user_info.get("signature", "")
             unique_id = user_info.get("uniqueId", clean_user)
 
             # Process video list
             # Do not try to process videos for a private account.
             raw_videos = [] if is_private else (embed_data.get("videoList", []) or [])
+            if not isinstance(raw_videos, list):
+                raise ValueError("Invalid videoList")
             parsed_videos: List[Dict[str, Any]] = []
             total_views = 0
             latest_views = []
 
             for vid in raw_videos[:10]:
-                play_count = vid.get("playCount", 0)
+                if not isinstance(vid, dict):
+                    raise ValueError("Invalid video record")
+                stats = vid.get("stats") or {}
+                play_count = metric(vid.get("playCount", stats.get("playCount")), "playCount")
                 total_views += play_count
                 if len(latest_views) < 5:
                     latest_views.append(play_count)
@@ -242,6 +209,7 @@ class TikTokChecker:
                 "nickname": nickname,
                 "avatar": avatar,
                 "status": "LIVE",
+                "status_code": r.status_code,
                 "followers": follower_count,
                 "following": following_count,
                 "total_likes": raw_hearts,
@@ -257,19 +225,28 @@ class TikTokChecker:
                 "error": ""
             }
 
-        except requests.errors.Timeout:
+        except Timeout:
+            self.reset_session()
             return {
                 "raw_input": username,
                 "username": clean_user,
                 "status": "TIMEOUT",
-                "latency_ms": round((time.time() - start_time) * 1000, 1),
+                "latency_ms": round((time.monotonic() - start_time) * 1000, 1),
                 "error": "Quá thời gian chờ (Timeout)"
             }
+        except (ValueError, TypeError, AttributeError) as e:
+            return {
+                "raw_input": username, "username": clean_user,
+                "status": "PARSE_ERROR", "error": str(e),
+                "status_code": getattr(locals().get("r"), "status_code", None),
+                "latency_ms": round((time.monotonic() - start_time) * 1000, 1),
+            }
         except Exception as e:
+            self.reset_session()
             return {
                 "raw_input": username,
                 "username": clean_user,
                 "status": "EXCEPTION",
-                "latency_ms": round((time.time() - start_time) * 1000, 1),
+                "latency_ms": round((time.monotonic() - start_time) * 1000, 1),
                 "error": str(e)
             }

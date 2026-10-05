@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 import logging
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -595,6 +595,9 @@ class JobManager:
             retry_candidates: dict[uuid.UUID, dict[str, Any]] = {}
             finalizing_retry_errors: set[uuid.UUID] = set()
             retry_round = 0
+            first_pass = Counter()
+            first_pass_seen: set[uuid.UUID] = set()
+            check_started = time.monotonic()
             persistence_retries: dict[uuid.UUID, int] = {}
             counters = {key: 0 for key in ("processed_accounts", "live_count", "die_count",
                                          "error_count", "follower_changed_count", "new_problem_count")}
@@ -651,6 +654,19 @@ class JobManager:
                         raw = future.result()
                     except Exception as exc:
                         raw = {"status": "EXCEPTION", "error": str(exc), "account_id": str(account_id)}
+
+                    if account_id not in first_pass_seen:
+                        first_pass_seen.add(account_id)
+                        category = str(raw.get("status", "EXCEPTION"))
+                        if raw.get("status_code") and category != "LIVE":
+                            category += f"_{raw['status_code']}"
+                        first_pass[category] += 1
+                        if len(first_pass_seen) == len(account_ids):
+                            logger.info(
+                                "checker first_pass run=%s total=%s seconds=%.2f results=%s",
+                                run_id, len(account_ids), time.monotonic() - check_started,
+                                dict(first_pass),
+                            )
 
                     if retryable_result(raw) and account_id not in finalizing_retry_errors:
                         retry_candidates[account_id] = raw

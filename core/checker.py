@@ -135,6 +135,12 @@ class TikTokChecker:
                 }
 
             if r.status_code != 200:
+                # A 503 can leave this worker reusing the same failing edge
+                # connection or response cookies for its next account. Retire
+                # only that worker's session. This does not retry the account
+                # or alter first-pass concurrency.
+                if r.status_code == 503:
+                    self.reset_session()
                 return {
                     "raw_input": username,
                     "username": clean_user,

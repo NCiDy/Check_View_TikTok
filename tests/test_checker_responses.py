@@ -87,6 +87,28 @@ def test_upstream_failure_is_not_hidden(status):
     assert result["status_code"] == status
 
 
+def test_503_retires_only_failed_workers_session():
+    checker = TikTokChecker()
+    failed = Mock()
+    failed.get.return_value = SimpleNamespace(status_code=503, text="unavailable")
+    checker._thread_local.session = failed
+    result = checker.check("sample")
+    assert result["status"] == "HTTP_ERROR"
+    failed.get.assert_called_once()
+    failed.close.assert_called_once()
+    assert checker._thread_local.session is None
+
+
+def test_200_keeps_connection_for_next_account():
+    checker = TikTokChecker()
+    session = Mock()
+    session.get.return_value = SimpleNamespace(status_code=200, text=response())
+    checker._thread_local.session = session
+    assert checker.check("sample")["status"] == "LIVE"
+    assert checker._thread_local.session is session
+    session.close.assert_not_called()
+
+
 def test_missing_video_views_not_saved_as_zero():
     assert check(response(videos=[{"id": "1"}]))[0]["status"] == "PARSE_ERROR"
 

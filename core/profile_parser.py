@@ -75,6 +75,8 @@ def _normalize(user, stats, stats_v2, username):
 def parse_profile(html, username):
     parser = _Scripts()
     parser.feed(html)
+    if not parser.states and ("SlardarWAF" in html or "_wafchallengeid" in html):
+        raise ProfileDataError("upstream_waf_challenge: TikTok trả trang xác minh JavaScript, không có follow")
     reasons = []
     for ident, text in parser.states:
         try:

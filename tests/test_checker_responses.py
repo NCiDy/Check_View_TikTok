@@ -109,8 +109,17 @@ def test_200_keeps_connection_for_next_account():
     session.close.assert_not_called()
 
 
-def test_missing_video_views_not_saved_as_zero():
-    assert check(response(videos=[{"id": "1"}]))[0]["status"] == "PARSE_ERROR"
+def test_missing_video_views_does_not_discard_valid_followers():
+    raw = check(response(videos=[{"id": "1"}]))[0]
+    assert raw["status"] == "LIVE" and raw["followers"] == 123
+    assert raw["videos"] == [] and raw["total_sample_views"] == 0
+
+
+def test_bad_video_record_does_not_discard_other_valid_videos():
+    raw = check(response(videos=[None, {"id": "bad", "playCount": "oops"},
+                                 {"id": "ok", "playCount": 70}]))[0]
+    assert raw["status"] == "LIVE" and raw["total_sample_views"] == 70
+    assert len(raw["videos"]) == 1
 
 
 def test_profile_headers_follow_library_browser_version():

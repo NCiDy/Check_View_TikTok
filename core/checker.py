@@ -16,7 +16,6 @@ class TikTokChecker:
     BASE_EMBED_URL = "https://www.tiktok.com/embed/@{username}"
     BASE_PROFILE_URL = "https://www.tiktok.com/@{username}"
     VIDEO_TIMEOUT_SECONDS = 1
-    VIDEO_COOLDOWN_SECONDS = 60
     DEFAULT_HEADERS = {
         "Referer": "https://www.tiktok.com/",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -33,9 +32,6 @@ class TikTokChecker:
         # per checker thread because Session objects are not shared across
         # workers safely.
         self._thread_local = threading.local()
-        self._video_lock = threading.Lock()
-        self._video_probe_running = False
-        self._video_next_probe = 0.0
 
     def _session(self):
         session = getattr(self._thread_local, "session", None)
@@ -99,35 +95,45 @@ class TikTokChecker:
             return ""
         return text
 
-    def _optional_video_metrics(self, result, proxy):
-        # One short probe at a time. An unavailable embed must not consume
-        # five worker slots repeatedly or trigger follower retry rounds.
+    def _optional_video_metrics(self, result, proxy, timeout=None):
         if result["is_private"]:
             return
-        with self._video_lock:
-            if self._video_probe_running or time.monotonic() < self._video_next_probe:
-                return
-            self._video_probe_running = True
-        available = False
         try:
             videos = self._check_embed(result["username"], proxy=proxy,
-                                       timeout=self.VIDEO_TIMEOUT_SECONDS)
+                                       timeout=self.VIDEO_TIMEOUT_SECONDS if timeout is None else timeout)
             if videos.get("status") == "LIVE":
                 fields = {key: videos[key] for key in (
                     "videos", "video_count_sample", "total_sample_views",
                     "avg_sample_views", "latest_5_views")}
                 result.update(fields)
-                available = True
         except Exception:
             # A successful follower result cannot be demoted by video errors.
             pass
-        finally:
-            with self._video_lock:
-                self._video_probe_running = False
-                if not available:
-                    self._video_next_probe = time.monotonic() + self.VIDEO_COOLDOWN_SECONDS
 
     def check(self, username: str, proxy: Optional[str] = None, timeout: int = 10) -> Dict[str, Any]:
+        started = time.monotonic()
+        profile = self._check_profile(username, proxy=proxy, timeout=timeout)
+        if profile.get("status") == "LIVE" or profile.get("status") == "INVALID_INPUT":
+            return profile
+        # Recover channels still served by the original embed endpoint instead
+        # of making the new profile parser the only route to success. Spend
+        # at most the remaining original timeout, capped at two seconds.
+        remaining = float(timeout) - (time.monotonic() - started)
+        if remaining <= 0:
+            return profile
+        try:
+            embed = self._check_embed(username, proxy=proxy, timeout=min(remaining, 2.0))
+            if embed.get("status") == "LIVE":
+                embed["source"] = "EMBED_FALLBACK"
+                return embed
+            profile["error"] = (str(profile.get("error", ""))
+                                + "; embed=" + str(embed.get("status"))
+                                + "/" + str(embed.get("status_code")))[:1000]
+        except Exception as exc:
+            profile["error"] = (str(profile.get("error", "")) + "; embed=" + type(exc).__name__)[:1000]
+        return profile
+
+    def _check_profile(self, username: str, proxy: Optional[str] = None, timeout: int = 10) -> Dict[str, Any]:
         clean_user = self.clean_username(username)
         if not clean_user:
             return {"raw_input": username, "username": "", "status": "INVALID_INPUT",
@@ -156,7 +162,11 @@ class TikTokChecker:
             result = parse_profile(response.text, clean_user)
             result.update(raw_input=username, status_code=response.status_code,
                           source="PROFILE", latency_ms=round((time.monotonic() - started) * 1000, 1))
-            self._optional_video_metrics(result, proxy)
+            remaining = float(timeout) - (time.monotonic() - started)
+            if remaining > 0:
+                self._optional_video_metrics(result, proxy,
+                                             timeout=min(remaining, self.VIDEO_TIMEOUT_SECONDS))
+            result["latency_ms"] = round((time.monotonic() - started) * 1000, 1)
             return result
         except Timeout:
             self.reset_session()
@@ -252,12 +262,18 @@ class TikTokChecker:
                 }
 
             # Correct 32-bit signed integer overflow for large heartCount
-            raw_hearts = metric(user_info.get("heartCount"), "heartCount", default=0, signed=True)
+            try:
+                raw_hearts = metric(user_info.get("heartCount"), "heartCount", default=0, signed=True)
+            except ValueError:
+                raw_hearts = 0
             if isinstance(raw_hearts, int) and raw_hearts < 0:
                 raw_hearts = raw_hearts + (1 << 32)
 
             follower_count = metric(user_info.get("followerCount"), "followerCount")
-            following_count = metric(user_info.get("followingCount"), "followingCount", default=0)
+            try:
+                following_count = metric(user_info.get("followingCount"), "followingCount", default=0)
+            except ValueError:
+                following_count = 0
             is_private = user_info.get("privateAccount", False)
             is_verified = user_info.get("verified", False)
             nickname = user_info.get("nickname", "")
@@ -269,16 +285,20 @@ class TikTokChecker:
             # Do not try to process videos for a private account.
             raw_videos = [] if is_private else (embed_data.get("videoList", []) or [])
             if not isinstance(raw_videos, list):
-                raise ValueError("Invalid videoList")
+                raw_videos = []
             parsed_videos: List[Dict[str, Any]] = []
             total_views = 0
             latest_views = []
 
             for vid in raw_videos[:10]:
                 if not isinstance(vid, dict):
-                    raise ValueError("Invalid video record")
+                    continue
                 stats = vid.get("stats") or {}
-                play_count = metric(vid.get("playCount", stats.get("playCount")), "playCount")
+                stats = stats if isinstance(stats, dict) else {}
+                try:
+                    play_count = metric(vid.get("playCount", stats.get("playCount")), "playCount")
+                except ValueError:
+                    continue
                 total_views += play_count
                 if len(latest_views) < 5:
                     latest_views.append(play_count)

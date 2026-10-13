@@ -25,7 +25,7 @@ def check(html, status=200):
     session = Mock()
     session.get.return_value = SimpleNamespace(status_code=status, text=html)
     checker._session = lambda: session
-    result = checker.check("sample")
+    result = checker._check_embed("sample")
     assert session.get.call_count == 1  # All recovery is in the original response.
     return result, session
 
@@ -92,7 +92,7 @@ def test_503_retires_only_failed_workers_session():
     failed = Mock()
     failed.get.return_value = SimpleNamespace(status_code=503, text="unavailable")
     checker._thread_local.session = failed
-    result = checker.check("sample")
+    result = checker._check_embed("sample")
     assert result["status"] == "HTTP_ERROR"
     failed.get.assert_called_once()
     failed.close.assert_called_once()
@@ -104,7 +104,7 @@ def test_200_keeps_connection_for_next_account():
     session = Mock()
     session.get.return_value = SimpleNamespace(status_code=200, text=response())
     checker._thread_local.session = session
-    assert checker.check("sample")["status"] == "LIVE"
+    assert checker._check_embed("sample")["status"] == "LIVE"
     assert checker._thread_local.session is session
     session.close.assert_not_called()
 

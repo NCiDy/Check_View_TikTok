@@ -5,14 +5,18 @@ from typing import Dict, Any, Optional, List
 from curl_cffi import requests
 from curl_cffi.requests.exceptions import Timeout
 from core.embed_parser import parse_embed, metric
+from core.profile_parser import parse_profile, ProfileDataError
 
 class TikTokChecker:
     """
     Public, login-free TikTok profile and video metrics extractor.
-    Uses public embed SSR endpoints with TLS Chrome impersonation.
+    Reads profile followers first; embed video metrics are best effort.
     """
     
     BASE_EMBED_URL = "https://www.tiktok.com/embed/@{username}"
+    BASE_PROFILE_URL = "https://www.tiktok.com/@{username}"
+    VIDEO_TIMEOUT_SECONDS = 1
+    VIDEO_COOLDOWN_SECONDS = 60
     DEFAULT_HEADERS = {
         "Referer": "https://www.tiktok.com/",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -29,6 +33,9 @@ class TikTokChecker:
         # per checker thread because Session objects are not shared across
         # workers safely.
         self._thread_local = threading.local()
+        self._video_lock = threading.Lock()
+        self._video_probe_running = False
+        self._video_next_probe = 0.0
 
     def _session(self):
         session = getattr(self._thread_local, "session", None)
@@ -86,7 +93,77 @@ class TikTokChecker:
             return ""
         return text
 
+    def _optional_video_metrics(self, result, proxy):
+        # One short probe at a time. An unavailable embed must not consume
+        # five worker slots repeatedly or trigger follower retry rounds.
+        if result["is_private"]:
+            return
+        with self._video_lock:
+            if self._video_probe_running or time.monotonic() < self._video_next_probe:
+                return
+            self._video_probe_running = True
+        available = False
+        try:
+            videos = self._check_embed(result["username"], proxy=proxy,
+                                       timeout=self.VIDEO_TIMEOUT_SECONDS)
+            if videos.get("status") == "LIVE":
+                fields = {key: videos[key] for key in (
+                    "videos", "video_count_sample", "total_sample_views",
+                    "avg_sample_views", "latest_5_views")}
+                result.update(fields)
+                available = True
+        except Exception:
+            # A successful follower result cannot be demoted by video errors.
+            pass
+        finally:
+            with self._video_lock:
+                self._video_probe_running = False
+                if not available:
+                    self._video_next_probe = time.monotonic() + self.VIDEO_COOLDOWN_SECONDS
+
     def check(self, username: str, proxy: Optional[str] = None, timeout: int = 10) -> Dict[str, Any]:
+        clean_user = self.clean_username(username)
+        if not clean_user:
+            return {"raw_input": username, "username": "", "status": "INVALID_INPUT",
+                    "error": "Tên người dùng không hợp lệ"}
+        started = time.monotonic()
+        response = None
+        try:
+            options = {}
+            if proxy:
+                p = proxy.strip()
+                if not p.startswith(("http://", "https://", "socks5://")):
+                    p = "http://" + p
+                options["proxies"] = {"http": p, "https": p}
+            response = self._session().get(
+                self.BASE_PROFILE_URL.format(username=clean_user),
+                headers=self.DEFAULT_HEADERS, impersonate="chrome", timeout=timeout,
+                **options,
+            )
+            if response.status_code != 200:
+                return {"raw_input": username, "username": clean_user,
+                        "status": "NOT_FOUND" if response.status_code == 404 else "HTTP_ERROR",
+                        "status_code": response.status_code,
+                        "latency_ms": round((time.monotonic() - started) * 1000, 1),
+                        "error": f"Trang hồ sơ trả HTTP {response.status_code}"}
+            result = parse_profile(response.text, clean_user)
+            result.update(raw_input=username, status_code=response.status_code,
+                          source="PROFILE", latency_ms=round((time.monotonic() - started) * 1000, 1))
+            self._optional_video_metrics(result, proxy)
+            return result
+        except Timeout:
+            self.reset_session()
+            status, error = "TIMEOUT", "Quá thời gian chờ lấy follow"
+        except ProfileDataError as exc:
+            status, error = "PARSE_ERROR", str(exc)
+        except Exception as exc:
+            self.reset_session()
+            status, error = "EXCEPTION", str(exc)
+        return {"raw_input": username, "username": clean_user, "status": status,
+                "status_code": getattr(response, "status_code", None), "error": error,
+                "latency_ms": round((time.monotonic() - started) * 1000, 1)}
+
+    def _check_embed(self, username: str, proxy: Optional[str] = None, timeout: int = 10) -> Dict[str, Any]:
         """
         Check a single TikTok account.
         Returns detailed dict with status, followers, following, likes, views, videos, etc.

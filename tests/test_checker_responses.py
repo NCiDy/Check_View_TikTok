@@ -132,7 +132,7 @@ def test_transport_error_resets_worker_session_without_extra_request(exc, status
     session = Mock()
     session.get.side_effect = exc
     checker._thread_local.session = session
-    result = checker.check("sample")
+    result = checker._check_embed("sample")
     assert result["status"] == status
     session.get.assert_called_once()
     session.close.assert_called_once()

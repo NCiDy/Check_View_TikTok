@@ -3,7 +3,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, MagicMock
 
 import pytest
 from curl_cffi.requests.exceptions import Timeout
@@ -22,10 +22,12 @@ def html(followers=2744, username="sample", stats_v2=None, extra_user=None, stat
 
 def checker_for(body=None, status=200):
     checker = TikTokChecker()
-    session = Mock()
-    session.get.return_value = SimpleNamespace(status_code=status, text=body or html())
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.get.return_value = SimpleNamespace(status_code=status, text=body or html(), content=(body or html()).encode())
     checker._thread_local.session = session
     checker._session = lambda: session
+    checker._profile_session = lambda: session
     checker._check_embed = Mock(return_value={"status": "HTTP_ERROR", "status_code": 503})
     return checker, session
 
@@ -159,3 +161,40 @@ def test_sigi_profile_shape_is_supported():
                            "stats": {"sample": {"followerCount": 5}}}}
     body = '<script id="SIGI_STATE">' + json.dumps(data) + '</script>'
     assert parse_profile(body, "sample")["followers"] == 5
+
+
+def test_batch_of_50_uses_fresh_profile_sessions_and_closes_all(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import core.checker as module
+    created = []
+    lock = threading.Lock()
+    class SingleUseSession:
+        def __init__(self):
+            self.used = False
+            self.closed = False
+            with lock:
+                created.append(self)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.closed = True
+        def get(self, url, **kwargs):
+            assert not self.used, "Profile cookie jar must not cross accounts"
+            self.used = True
+            username = url.rsplit("/", 1)[1][1:]
+            return SimpleNamespace(status_code=200, text=html(50, username), content=b"profile")
+    monkeypatch.setattr(module.requests, "Session", SingleUseSession)
+    checker = TikTokChecker()
+    checker._check_embed = Mock(return_value={"status": "HTTP_ERROR", "status_code": 503})
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        results = list(pool.map(checker.check, [f"account{i}" for i in range(50)]))
+    assert len(created) == 50 and all(s.closed for s in created)
+    assert all(r["status"] == "LIVE" and r["followers"] == 50 for r in results)
+    assert checker._check_embed.call_count == 1
+
+
+def test_profile_error_diagnosis_distinguishes_missing_json_from_status():
+    with pytest.raises(ProfileDataError, match="profile_json_missing"):
+        parse_profile("<html>empty</html>", "sample")
+    with pytest.raises(ProfileDataError, match="profile_status=10201"):
+        parse_profile(html(status=10201), "sample")

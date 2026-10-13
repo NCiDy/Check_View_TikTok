@@ -44,6 +44,12 @@ class TikTokChecker:
             self._thread_local.session = session
         return session
 
+    @staticmethod
+    def _profile_session():
+        # Match the successful Render probe: a separate cookie jar and curl
+        # connection for each profile. Embed responses cannot affect it.
+        return requests.Session()
+
     def reset_session(self) -> None:
         """Drop the current worker's connection before a deferred retry."""
         session = getattr(self._thread_local, "session", None)
@@ -135,11 +141,12 @@ class TikTokChecker:
                 if not p.startswith(("http://", "https://", "socks5://")):
                     p = "http://" + p
                 options["proxies"] = {"http": p, "https": p}
-            response = self._session().get(
-                self.BASE_PROFILE_URL.format(username=clean_user),
-                headers=self.DEFAULT_HEADERS, impersonate="chrome", timeout=timeout,
-                **options,
-            )
+            with self._profile_session() as session:
+                response = session.get(
+                    self.BASE_PROFILE_URL.format(username=clean_user),
+                    headers=self.DEFAULT_HEADERS, impersonate="chrome", timeout=timeout,
+                    **options,
+                )
             if response.status_code != 200:
                 return {"raw_input": username, "username": clean_user,
                         "status": "NOT_FOUND" if response.status_code == 404 else "HTTP_ERROR",
@@ -155,7 +162,8 @@ class TikTokChecker:
             self.reset_session()
             status, error = "TIMEOUT", "Quá thời gian chờ lấy follow"
         except ProfileDataError as exc:
-            status, error = "PARSE_ERROR", str(exc)
+            status = "PARSE_ERROR"
+            error = f"{exc}; bytes={len(response.content)}" if response is not None else str(exc)
         except Exception as exc:
             self.reset_session()
             status, error = "EXCEPTION", str(exc)

@@ -75,6 +75,7 @@ def _normalize(user, stats, stats_v2, username):
 def parse_profile(html, username):
     parser = _Scripts()
     parser.feed(html)
+    reasons = []
     for ident, text in parser.states:
         try:
             try:
@@ -84,6 +85,7 @@ def parse_profile(html, username):
             if ident == "__UNIVERSAL_DATA_FOR_REHYDRATION__":
                 detail = data.get("__DEFAULT_SCOPE__", {}).get("webapp.user-detail", {})
                 if detail.get("statusCode") not in (0, "0"):
+                    reasons.append(f"profile_status={detail.get('statusCode')}")
                     continue
                 info = detail.get("userInfo") or {}
                 user = info.get("user") or {}
@@ -97,10 +99,13 @@ def parse_profile(html, username):
                 stats = (module.get("stats") or {}).get(user.get("uniqueId"), {})
                 stats_v2 = {}
             if not isinstance(user, dict):
+                reasons.append("invalid_user_object")
                 continue
             stats = stats if isinstance(stats, dict) else {}
             stats_v2 = stats_v2 if isinstance(stats_v2, dict) else {}
             return _normalize(user, stats, stats_v2, username)
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError) as exc:
+            reasons.append(str(exc)[:160])
             continue
-    raise ProfileDataError("Không lấy được follow hợp lệ từ trang hồ sơ")
+    reason = "; ".join(reasons[:3]) if reasons else "profile_json_missing"
+    raise ProfileDataError(f"Không lấy được follow: {reason}")

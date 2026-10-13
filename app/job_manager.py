@@ -661,6 +661,9 @@ class JobManager:
                         if raw.get("status_code") and category != "LIVE":
                             category += f"_{raw['status_code']}"
                         first_pass[category] += 1
+                        if category != "LIVE" and sum(first_pass.values()) - first_pass["LIVE"] <= 3:
+                            logger.warning("checker first_pass_error run=%s account=%s status=%s reason=%s",
+                                           run_id, account_id, category, str(raw.get("error", ""))[:300])
                         if len(first_pass_seen) == len(account_ids):
                             logger.info(
                                 "checker first_pass run=%s total=%s seconds=%.2f results=%s",

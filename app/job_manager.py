@@ -109,6 +109,7 @@ class JobManager:
             wait=False,
             cancel_futures=False,
         )
+        self.checker.close()
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
         if self.event_callback:

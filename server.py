@@ -2063,6 +2063,13 @@ def global_search(
     return {"results": results}
 
 
+# Temporary maintenance on v16 only. Keep existing buttons and read APIs.
+CHECKS_MAINTENANCE_MESSAGE = (
+    "Chức năng kiểm tra kênh hiện đang bảo trì để nâng cấp. "
+    "Vui lòng thử lại sau. Các chức năng khác vẫn hoạt động bình thường."
+)
+
+
 @app.post("/api/check-runs")
 def start_check(
     payload: CheckStartRequest,
@@ -2071,6 +2078,8 @@ def start_check(
     current: User = Depends(csrf_protect),
     current_session: UserSession = Depends(get_current_session),
 ):
+    if CHECKS_MAINTENANCE_MESSAGE:
+        raise HTTPException(status_code=503, detail=CHECKS_MAINTENANCE_MESSAGE)
     manager = get_job_manager(request)
     target_id = parse_uuid(payload.target_user_id, "Target User ID") if payload.target_user_id else None
     selected_ids = [parse_uuid(value, "Account ID") for value in payload.account_ids]
